@@ -9,4 +9,5 @@ target_link_libraries(fgampl m)
 add_executable(aud-mod-af "aud-mod-af.c")
 target_link_libraries(aud-mod-af m)
 
+add_executable(caps-blink "caps-blink.c")
 

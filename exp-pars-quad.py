@@ -150,8 +150,8 @@ def parse_polyn(s: str) -> list[Term]:
 
     terms = sorted(terms, key=lambda x: x.deg, reverse=True)
 
-    import pprint
-    pprint.pp(terms)
+    # import pprint
+    # pprint.pp(terms)
 
     return terms
 

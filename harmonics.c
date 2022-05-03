@@ -30,7 +30,7 @@ int main()
 	double f = 100.;
 
 	for (;;) {
-		for (double t = 0.; t < 1.; t += DT) {
+		for (double t = 0.; t < 0.5; t += DT) {
 			double y = 0.;
 			for (int i = 0; i < NHARMS; i++)
 				y += sin((i + 1.) * 2. * PI * f * t) /
@@ -42,7 +42,7 @@ int main()
 			fwrite(aout.raw, NBYTES, 1, stdout);
 		}
 
-		f += 25.;
+		f += 100.;
 	}
 
 	return 0;
