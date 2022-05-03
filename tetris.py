@@ -1,10 +1,11 @@
+from audioop import mul
 import random
 import sys
 import pyglet
 
 from copy import deepcopy
 from functools import partial
-from pyglet import window, shapes
+from pyglet import window, shapes, text
 
 # TODO Add changing config of block when rotation not possible
 # at present anchor position, due to no space on some sides
@@ -45,11 +46,19 @@ class Point:
 
 
 class Block:
-    def __init__(self, states: list[list[tuple[int, int]]], anchor=(0, 0)) -> None:
+    # Zeroth index must be black
+    COLORS = [
+        (0, 0, 0),
+        (0, 255, 255), (255, 255, 0), (127, 0, 127), (0, 255, 0),
+        (255, 0, 0), (0, 0, 255), (255, 127, 0), (127, 127, 127),
+    ]
+
+    def __init__(self, states, anchor=(0, 0), colid=0) -> None:
         self.states = [[Point(pos[0], pos[1]) for pos in s] for s in states]
         self.at = 0
         self.current = self.states[0]
         self.anchor = anchor
+        self.colid = colid % len(Block.COLORS)
         # self.batch = pyglet.graphics.Batch()
 
     def next_config(self):
@@ -99,7 +108,8 @@ S_T = [
     [(+1, 0), (0, 0), (0, 1), (0, -1)],
 ]
 
-BLOCKS = [Block(blk) for blk in [S_SQ, S_I, S_J, S_L, S_Z, S_S, S_T]]
+BLOCKS = [Block(blk, colid=i+1) for i, blk
+          in enumerate([S_SQ, S_I, S_J, S_L, S_Z, S_S, S_T])]
 perr = partial(print, file=sys.stderr)
 
 
@@ -112,18 +122,24 @@ class ColorCycler:
         self.at = 0
         self.dir = 1
 
-    def next(self):
+    def next(self) -> tuple[int, int, int]:
         if self.at == self.steps:
             self.dir = -1
         elif self.at == 0:
             self.dir = 1
 
-        f = self.at / self.steps
-
-        self.at += self.dir
+        f = (self.at / self.steps) ** 0.5
         self.r = (self.start[0] * f + self.end[0] * (1 - f)) // 1
         self.g = (self.start[1] * f + self.end[1] * (1 - f)) // 1
         self.b = (self.start[2] * f + self.end[2] * (1 - f)) // 1
+
+        self.at += self.dir
+
+        return (self.r, self.g, self.b)
+
+    @staticmethod
+    def complement(color: tuple[int, int, int]) -> tuple[int, int, int]:
+        return ((255 - color[0]), (255 - color[1]), (255 - color[2]))
 
 
 class Arena:
@@ -185,7 +201,7 @@ class Arena:
 
         return False
 
-    def fill(self, block: Block, fval: int = 1):
+    def fill(self, block: Block, fval: int):
         for rpos in block.current:
             tmp = rpos + block.anchor
             if self._is_inside(tmp):
@@ -223,6 +239,8 @@ class Arena:
         sys.stdout.flush()
 
 
+# TODO Seperate window instance from Game-state machine
+# ! Name clashes possible
 class GState(window.Window):
     DOWN_TICKS = 30
 
@@ -231,46 +249,68 @@ class GState(window.Window):
         config = pyglet.gl.Config(
             sample_buffers=1, samples=4, double_buffer=True)
         super(GState, self).__init__(
-            w * size, h * size, caption=title, config=config)
+            w * size * 2, h * size, caption=title, config=config)
 
         self.w = w
         self.h = h
+        self.size = size
+        self.score = 0
+        self.down_ticks = 0
+        self.margin = 1
+        self.paused = False
 
         self.arena = Arena(w, h)
-        self.down_ticks = 0
         self.block = deepcopy(random.choice(BLOCKS))
+        self.next_block = deepcopy(random.choice(BLOCKS))
         self.block.anchor = Point(w // 2, h)
         self.color = ColorCycler((128, 128, 255), (255, 255, 255))
-        self.dyn_tiles: list[shapes.Rectangle] = []
-        self.size = size
-        for _ in range(NTILES):
-            tmp = shapes.Rectangle(
-                0, 0,
-                self.size, self.size,
-                color=(255, 0, 0)
-            )
-            self.dyn_tiles.append(tmp)
 
     def on_draw(self):
-        # self.arena.debug_raw(self.block)
-
         self.clear()
+        # self.arena.debug_raw(self.block)
+        tsq = shapes.Rectangle(
+            0, 0,
+            self.size - self.margin * 2, self.size - self.margin * 2,
+        )
+        tsq.anchor_position = (self.margin, self.margin)
+
         # Draw the fixed tiles in buffer
         for y, row in enumerate(self.arena.buf):
-            color = (255, 255, 255)
-            for x, tile in enumerate(row):
-                tmp = shapes.Rectangle(
-                    x * self.size, y * self.size,
-                    self.size, self.size, color=color
-                )
-                if tile:
-                    tmp.draw()
+            for x, tile_col in enumerate(row):
+                tsq.color = Block.COLORS[tile_col]
+                tsq.x = x * self.size
+                tsq.y = y * self.size
+                if tile_col:
+                    tsq.draw()
 
         # Draw the falling tile
-        for sq, pos in zip(self.dyn_tiles, self.block.current):
-            sq.x = pos.x * self.size + self.block.anchor.x * self.size
-            sq.y = pos.y * self.size + self.block.anchor.y * self.size
-            sq.draw()
+        for pos in self.block.current:
+            tsq.x = pos.x * self.size + self.block.anchor.x * self.size
+            tsq.y = pos.y * self.size + self.block.anchor.y * self.size
+            tsq.color = self.color.next()
+            tsq.draw()
+
+        # Draw the vertical seperator
+        tsq.color = (127, 127, 127)
+        for ny in range(self.h):
+            tsq.position = (self.w * self.size, ny * self.size)
+            tsq.draw()
+
+        # Draw next tile
+        tsq.color = Block.COLORS[self.next_block.colid]
+        next_at = Point(self.width * 3 // 4,
+                        self.height - self.size * 3)
+        for pos in self.next_block.current:
+            tmp = self.size * pos + next_at
+            tsq.x, tsq.y = tmp.x, tmp.y
+            tsq.draw()
+
+        score = text.Label(
+            f"Rows Cleared {self.score}",
+            x=next_at.x, y=self.height // 2,
+            font_size=self.size // 2, anchor_x="center"
+        )
+        score.draw()
 
     def on_key_press(self, sym, mods) -> None:
         k = window.key
@@ -282,8 +322,8 @@ class GState(window.Window):
             if not self.arena.will_fit(self.block):
                 self.block.prev_config()
         elif sym == k.DOWN:
-            while not self.arena.at_bottom(self.block):
-                self.block.anchor.y -= 1
+            # Handeled in update(), when down arrow key is hold down
+            pass
         elif sym == k.RIGHT:
             self.block.anchor.x += 1
             if not self.arena.will_fit(self.block):
@@ -292,12 +332,18 @@ class GState(window.Window):
             self.block.anchor.x -= 1
             if not self.arena.will_fit(self.block):
                 self.block.anchor.x += 1
+        elif sym == k.SPACE:
+            self.paused = not self.paused
 
     def update(self, dt):
+        if self.paused:
+            return
+
+        if window.key.DOWN in self.pressed_keys:
+            if not self.arena.at_bottom(self.block):
+                self.block.anchor.y -= 1
+
         self.down_ticks += 1
-        for tile in self.dyn_tiles:
-            self.color.next()
-            tile.color = self.color.r, self.color.g, self.color.b
 
         # No further processing required if no descent
         if self.down_ticks != GState.DOWN_TICKS:
@@ -305,10 +351,11 @@ class GState(window.Window):
         self.down_ticks = 0
 
         if self.arena.at_bottom(self.block):
-            self.arena.fill(self.block)
-            self.block = deepcopy(random.choice(BLOCKS))
+            self.arena.fill(self.block, self.block.colid)
+            self.block = self.next_block
+            self.next_block = deepcopy(random.choice(BLOCKS))
             self.block.anchor = Point(self.w // 2, self.h)
-            self.arena.clear_full_rows()
+            self.score += self.arena.clear_full_rows()
         else:
             self.block.anchor.y -= 1
 
