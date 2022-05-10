@@ -1,10 +1,10 @@
-from audioop import mul
 import random
 import sys
 import pyglet
 
 from copy import deepcopy
 from functools import partial
+from itertools import repeat
 from pyglet import window, shapes, text
 
 # TODO Add changing config of block when rotation not possible
@@ -53,7 +53,8 @@ class Block:
         (255, 0, 0), (0, 0, 255), (255, 127, 0), (127, 127, 127),
     ]
 
-    def __init__(self, states, anchor=(0, 0), colid=0) -> None:
+    def __init__(self, states: list[list[tuple[int, int]]], anchor: Point = None, colid=0) -> None:
+        anchor = anchor or Point(0, 0)
         self.states = [[Point(pos[0], pos[1]) for pos in s] for s in states]
         self.at = 0
         self.current = self.states[0]
@@ -138,7 +139,7 @@ class ColorCycler:
         return (self.r, self.g, self.b)
 
     @staticmethod
-    def complement(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    def invert(color: tuple[int, int, int]) -> tuple[int, int, int]:
         return ((255 - color[0]), (255 - color[1]), (255 - color[2]))
 
 
@@ -151,33 +152,66 @@ class Arena:
     def _is_inside(self, pt: Point) -> bool:
         return 0 <= pt.x < self.w and 0 <= pt.y < self.h
 
-    def _neigh_count(self, x: int, y: int) -> int:
-        neighs = 0
-        if x > 0:
-            neighs += bool(self.buf[y][x-1])
-        if x < self.w - 1:
-            neighs += bool(self.buf[y][x+1])
-        if y > 0:
-            neighs += bool(self.buf[y-1][x])
-        if y < self.h - 1:
-            neighs += bool(self.buf[y+1][x])
+    def _get_neighbours(self, pt: Point, exclude=None) -> list[Point]:
+        x, y = pt.x, pt.y
+        exclude = exclude or []
+        neighs = []
+
+        if x > 0 and self.buf[y][x-1]:
+            neighs.append(Point(x-1, y))
+        if x < self.w - 1 and self.buf[y][x+1]:
+            neighs.append(Point(x + 1, y))
+        if y > 0 and self.buf[y-1][x]:
+            neighs.append(Point(x, y - 1))
+        if y < self.h - 1 and self.buf[y+1][x]:
+            neighs.append(Point(x, y + 1))
+
+        for i, item in enumerate(neighs):
+            if item in exclude:
+                neighs.pop(i)
 
         return neighs
 
-    def _drop_tile(self, x, y):
-        while y > 0 and not self.buf[y - 1][x]:
-            tmp = self.buf[y][x]
-            self.buf[y][x] = 0
-            self.buf[y - 1][x] = tmp
-            y -= 1
+    def _get_block_if_floating(self, x, y) -> Block | None:
+        stk = [Point(x, y)]
+        visited = []
+
+        while stk:
+            tmp = stk.pop()
+            neighs = self._get_neighbours(tmp, exclude=visited)
+            for pt in neighs:
+                # IF connected any block below it then not floating
+                # as those below it are not floating as per game logic
+                if pt.y <= y:
+                    return None
+            visited.append(tmp)
+            stk.extend(neighs)
+
+        return Block([[(pt.x - x, pt.y - y) for pt in visited]], anchor=Point(x, y))
 
     def _clear_row(self, y: int):
-        self.buf[y:] = self.buf[y+1:] + [[0 for _ in range(len(self.buf[y]))]]
-        for yr, row in enumerate(self.buf[y:]):
-            ya = yr + y
-            for xa, _tile in enumerate(row):
-                if self._neigh_count(xa, ya) == 0:
-                    self._drop_tile(xa, ya)
+        # As there is nothing above the top row
+        if y == self.h - 1:
+            self.buf[y] = [[0 for _ in range(self.w)]]
+            return
+
+        self.buf[y:] = self.buf[y+1:] + [[0 for _ in range(self.w)]]
+        # No floating tiles possible if on floor
+        if y == 0:
+            return
+
+        # Set down floating tiles
+        for x, tile in enumerate(self.buf[y - 1]):
+            above_tile = self.buf[y][x]
+            if above_tile == 0 or tile != 0:
+                continue
+
+            blk = self._get_block_if_floating(x, y)
+            if blk:
+                fvals = self.empty(blk)
+                while not self.at_bottom(blk):
+                    blk.anchor.y -= 1
+                self.fill(blk, fvals)
 
     def will_fit(self, block: Block) -> bool:
         for rpos in block.current:
@@ -201,14 +235,36 @@ class Arena:
 
         return False
 
-    def fill(self, block: Block, fval: int):
+    def fill(self, block: Block, fill: int | list[int]):
+        try:
+            iter(fill)
+        except TypeError:
+            fill = repeat(fill)
+        else:
+            assert len(fill) == len(block.current)
+
+        for fv, rpos in zip(fill, block.current):
+            tmp = rpos + block.anchor
+            if self._is_inside(tmp):
+                self.buf[tmp.y][tmp.x] = fv
+
+    def empty(self, block: Block) -> list[int]:
+        ret = []
         for rpos in block.current:
             tmp = rpos + block.anchor
             if self._is_inside(tmp):
-                self.buf[tmp.y][tmp.x] = fval
+                ret.append(self.buf[tmp.y][tmp.x])
+                self.buf[tmp.y][tmp.x] = 0
 
-    def is_row_full(self, y: int) -> bool:
-        return all(self.buf[y])
+        return ret
+
+    def get_full_rows(self, y: int) -> list[int]:
+        ret = []
+        for y, row in enumerate(self.buf):
+            if all(row):
+                ret.append(y)
+
+        return ret
 
     def clear_full_rows(self) -> int:
         cnt = 0
@@ -225,6 +281,7 @@ class Arena:
                 perr("# " if tile else "- ", end="")
             perr()
         perr("\n", "=" * (self.w * 2))
+        perr(self.buf)
 
     def debug_raw(self, extra: Block = None):
         pts = []
@@ -239,7 +296,7 @@ class Arena:
         sys.stdout.flush()
 
 
-# TODO Seperate window instance from Game-state machine
+# TODO Decouple window instance from Game-state machine
 # ! Name clashes possible
 class GState(window.Window):
     DOWN_TICKS = 30
@@ -249,7 +306,7 @@ class GState(window.Window):
         config = pyglet.gl.Config(
             sample_buffers=1, samples=4, double_buffer=True)
         super(GState, self).__init__(
-            w * size * 2, h * size, caption=title, config=config)
+            (w + 8) * size, h * size, caption=title, config=config)
 
         self.w = w
         self.h = h
@@ -276,11 +333,11 @@ class GState(window.Window):
 
         # Draw the fixed tiles in buffer
         for y, row in enumerate(self.arena.buf):
-            for x, tile_col in enumerate(row):
-                tsq.color = Block.COLORS[tile_col]
+            for x, tile_colid in enumerate(row):
+                tsq.color = Block.COLORS[tile_colid]
                 tsq.x = x * self.size
                 tsq.y = y * self.size
-                if tile_col:
+                if tile_colid:
                     tsq.draw()
 
         # Draw the falling tile
@@ -317,13 +374,11 @@ class GState(window.Window):
 
         if sym == k.ESCAPE:
             self.close()
+            self.arena.debug()
         if sym == k.UP:
             self.block.next_config()
             if not self.arena.will_fit(self.block):
                 self.block.prev_config()
-        elif sym == k.DOWN:
-            # Handeled in update(), when down arrow key is hold down
-            pass
         elif sym == k.RIGHT:
             self.block.anchor.x += 1
             if not self.arena.will_fit(self.block):
@@ -350,12 +405,16 @@ class GState(window.Window):
             return
         self.down_ticks = 0
 
+        tmp = self.arena.clear_full_rows()
+        while tmp:
+            self.score += tmp
+            tmp = self.arena.clear_full_rows()
+
         if self.arena.at_bottom(self.block):
             self.arena.fill(self.block, self.block.colid)
             self.block = self.next_block
             self.next_block = deepcopy(random.choice(BLOCKS))
             self.block.anchor = Point(self.w // 2, self.h)
-            self.score += self.arena.clear_full_rows()
         else:
             self.block.anchor.y -= 1
 
@@ -368,6 +427,11 @@ class GState(window.Window):
             self.arena.debug()
             perr("GAME OVER!!1")
             return
+
+
+class TetrisWin(window.Window):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 if __name__ == "__main__":
