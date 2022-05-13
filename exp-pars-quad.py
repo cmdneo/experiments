@@ -1,15 +1,8 @@
 R"""
-Calculates roots of a simple 2 degree equation, grouping or braces not
-supported. Single variable only. Using them will lead to UNEXPECTED results
-or crash or can set your computer on fire.
+Calculates roots of a simple 2 degree equation. Single variable only.
+Grouping or braces not supported.
 
-Author: Amiy K
-
-LICENSE
-Permission is hereby granted to do whatever you want to do with this
-computer program on the conditions that:
-1 => You cannot hold me liable due to any kind damage caused by this program
-     under any circumstances.
+Author: Amiy Kumar
 """
 
 

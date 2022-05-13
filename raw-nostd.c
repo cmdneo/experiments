@@ -5,6 +5,5 @@ void my_main_eee() {
 			"mov $0, %rbx\n"
 			"syscall\n"
 			""
-			
 	);
 }
