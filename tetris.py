@@ -1,10 +1,11 @@
-import random
 import sys
 import pyglet
+import random
 
 from copy import deepcopy
-from functools import partial
+from typing import Generator
 from itertools import repeat
+from functools import partial
 from pyglet import window, shapes, text
 
 # TODO Add changing config of block when rotation not possible
@@ -28,13 +29,10 @@ class Point:
     def __rmul__(self, scalar: int) -> "Point":
         return Point(self.x * scalar, self.y * scalar)
 
-    def __str__(self) -> str:
-        return self.__repr__()
-
     def __eq__(self, other: "Point") -> bool:
         return self.x == other.x and self.y == other.y
 
-    def __get__(self, n: int) -> int:
+    def __getitem__(self, n: int) -> int:
         if n == 0:
             return self.x
         elif n == 1:
@@ -48,27 +46,41 @@ class Point:
 class Block:
     # Zeroth index must be black
     COLORS = [
-        (0, 0, 0),
+        (69, 69, 69),
         (0, 255, 255), (255, 255, 0), (127, 0, 127), (0, 255, 0),
         (255, 0, 0), (0, 0, 255), (255, 127, 0), (127, 127, 127),
     ]
+    T = list[list[tuple[int, int]]]
 
-    def __init__(self, states: list[list[tuple[int, int]]], anchor: Point = None, colid=0) -> None:
+    def __init__(self, states: T, anchor: Point = None, colid=0) -> None:
         anchor = anchor or Point(0, 0)
         self.states = [[Point(pos[0], pos[1]) for pos in s] for s in states]
         self.at = 0
-        self.current = self.states[0]
+        self.current = tuple(self.states[0])
         self.anchor = anchor
         self.colid = colid % len(Block.COLORS)
-        # self.batch = pyglet.graphics.Batch()
 
     def next_config(self):
         self.at += 1
-        self.current = self.states[self.at % len(self.states)]
+        self.current = tuple(self.states[self.at % len(self.states)])
 
     def prev_config(self):
         self.at -= 1
-        self.current = self.states[self.at % len(self.states)]
+        self.current = tuple(self.states[self.at % len(self.states)])
+
+    def tile_positions(self) -> Generator[Point, None, None]:
+        for cur in self.current:
+            yield cur + self.anchor
+
+    def __bool__(self) -> bool:
+        return self.colid == 0
+
+    def __eq__(self, other: "Block") -> bool:
+        return self.current == other.current \
+            and self.anchor == other.anchor
+
+    def __repr__(self) -> str:
+        return f"({self.anchor} => {self.current})"
 
 
 # Blocks and their all configurations
@@ -144,17 +156,17 @@ class ColorCycler:
 
 
 class Arena:
-    def __init__(self, w: int, h: int) -> None:
+    def __init__(self, w: int, h: int, gstate=None) -> None:
         self.w = w
         self.h = h
+        self.gstate = gstate
         self.buf = [[0 for _ in range(w)] for _ in range(h)]
 
     def _is_inside(self, pt: Point) -> bool:
         return 0 <= pt.x < self.w and 0 <= pt.y < self.h
 
-    def _get_neighbours(self, pt: Point, exclude=None) -> list[Point]:
+    def _tile_neighs(self, pt: Point, exclude: list[Point] = None) -> list[Point]:
         x, y = pt.x, pt.y
-        exclude = exclude or []
         neighs = []
 
         if x > 0 and self.buf[y][x-1]:
@@ -166,71 +178,91 @@ class Arena:
         if y < self.h - 1 and self.buf[y+1][x]:
             neighs.append(Point(x, y + 1))
 
-        for i, item in enumerate(neighs):
-            if item in exclude:
-                neighs.pop(i)
+        if not exclude:
+            return neighs
+        return list(filter(lambda item: item not in exclude, neighs))
 
-        return neighs
-
-    def _get_block_if_floating(self, x, y) -> Block | None:
-        stk = [Point(x, y)]
+    def _floating_blocks_above(self, yabv: int) -> set[Block]:
+        assert yabv < self.h - 1
+        y = yabv + 1
+        blocks = []
         visited = []
 
-        while stk:
-            tmp = stk.pop()
-            neighs = self._get_neighbours(tmp, exclude=visited)
-            for pt in neighs:
-                # IF connected any block below it then not floating
-                # as those below it are not floating as per game logic
-                if pt.y <= y:
-                    return None
-            visited.append(tmp)
-            stk.extend(neighs)
+        # Find the disconnected subgraph(block)
+        # It is disconnected if it is not connected to any non-floating tiles.
+        # As per game logic all tiles with pos.y <= ya are non-floating
+        # ----------- The Stack of Iterators Pattern -----------
+        # An elegant pattern for eliminating recursion in graph algorithms
+        # Refer => https://garethrees.org/2016/09/28/pattern/
+        for x, base_tile in enumerate(self.buf[yabv]):
+            if not (self.buf[y][x] != 0 and base_tile == 0):
+                continue
+            stk = [iter([Point(x, y)])]
+            blk_tiles = []
 
-        return Block([[(pt.x - x, pt.y - y) for pt in visited]], anchor=Point(x, y))
+            while stk:
+                try:
+                    tile = next(stk[-1])
+                except StopIteration:
+                    stk.pop()
+                else:
+                    if tile in visited:
+                        break
+                    if tile.y <= yabv:
+                        blk_tiles.clear()
+                        break
+                    blk_tiles.append(tile)
+                    visited.append(tile)
+                    stk.append(iter(self._tile_neighs(tile, exclude=visited)))
 
-    def _clear_row(self, y: int):
+            if blk_tiles:
+                blocks.append(Block(
+                    [[(pt.x - x, pt.y - y) for pt in blk_tiles]], anchor=Point(x, y)
+                ))
+
+        # import pprint
+        # pprint.pp(blocks)
+        return blocks
+
+    def clear_row(self, y: int):
         # As there is nothing above the top row
         if y == self.h - 1:
             self.buf[y] = [[0 for _ in range(self.w)]]
             return
 
         self.buf[y:] = self.buf[y+1:] + [[0 for _ in range(self.w)]]
-        # No floating tiles possible if on floor
+        # No floating tiles possible if cleared row was on floor
         if y == 0:
             return
 
-        # Set down floating tiles
-        for x, tile in enumerate(self.buf[y - 1]):
-            above_tile = self.buf[y][x]
-            if above_tile == 0 or tile != 0:
-                continue
-
-            blk = self._get_block_if_floating(x, y)
-            if blk:
-                fvals = self.empty(blk)
-                while not self.at_bottom(blk):
+        # Get and remove all floating blocks from the arena
+        floating_blocks = self._floating_blocks_above(y - 1)
+        fvals = [self.empty(blk) for blk in floating_blocks]
+        # Bring them to bottom
+        while not all(map(self.at_bottom, floating_blocks)):
+            for blk in floating_blocks:
+                if not self.at_bottom(blk):
                     blk.anchor.y -= 1
-                self.fill(blk, fvals)
+        # Fill them in the arena with updated positions
+        for blk, fval in zip(floating_blocks, fvals):
+            self.fill(blk, fval)
 
     def will_fit(self, block: Block) -> bool:
-        for rpos in block.current:
-            tmp = rpos + block.anchor
-            # Can be above max height when new block spawned
-            if not (0 <= tmp.x < self.w and 0 <= tmp.y):
+        for pos in block.tile_positions():
+            # Can be above max-height when new block spawned
+            if not (0 <= pos.x < self.w and 0 <= pos.y):
                 return False
-            elif tmp.y < self.h and self.buf[tmp.y][tmp.x]:
+            elif pos.y < self.h and self.buf[pos.y][pos.x]:
                 return False
 
         return True
 
     def at_bottom(self, block: Block) -> bool:
-        for rpos in block.current:
-            tmp = rpos + block.anchor
-            if tmp.y == 0:
+        for pos in block.tile_positions():
+            if pos.y == 0:
                 return True
             # Case when (tmp.y - 1) is less than 0 is handled above
-            elif self._is_inside(tmp) and self.buf[tmp.y - 1][tmp.x]:
+            elif self._is_inside(pos) and self.buf[pos.y - 1][pos.x]:
                 return True
 
         return False
@@ -241,20 +273,18 @@ class Arena:
         except TypeError:
             fill = repeat(fill)
         else:
-            assert len(fill) == len(block.current)
+            assert len(fill) <= len(block.current)
 
-        for fv, rpos in zip(fill, block.current):
-            tmp = rpos + block.anchor
-            if self._is_inside(tmp):
-                self.buf[tmp.y][tmp.x] = fv
+        for fv, pos in zip(fill, block.tile_positions()):
+            if self._is_inside(pos):
+                self.buf[pos.y][pos.x] = fv
 
     def empty(self, block: Block) -> list[int]:
         ret = []
-        for rpos in block.current:
-            tmp = rpos + block.anchor
-            if self._is_inside(tmp):
-                ret.append(self.buf[tmp.y][tmp.x])
-                self.buf[tmp.y][tmp.x] = 0
+        for pos in block.tile_positions():
+            if self._is_inside(pos):
+                ret.append(self.buf[pos.y][pos.x])
+                self.buf[pos.y][pos.x] = 0
 
         return ret
 
@@ -271,7 +301,7 @@ class Arena:
         for y, row in enumerate(self.buf):
             if all(row):
                 cnt += 1
-                self._clear_row(y)
+                self.clear_row(y)
 
         return cnt
 
@@ -280,33 +310,37 @@ class Arena:
             for tile in row:
                 perr("# " if tile else "- ", end="")
             perr()
-        perr("\n", "=" * (self.w * 2))
+        perr("=" * (self.w * 2))
         perr(self.buf)
 
     def debug_raw(self, extra: Block = None):
         pts = []
         if extra is not None:
-            for rpos in extra.current:
-                pts.append(rpos + extra.anchor)
+            for pos in extra.tile_positions():
+                pts.append(pos)
 
         for y, row in enumerate(self.buf):
             for x, tile in enumerate(row):
-                # do better... and use binary format
+                # do better...
                 sys.stdout.write("1" if tile or Point(x, y) in pts else "0")
         sys.stdout.flush()
 
 
-# TODO Decouple window instance from Game-state machine
-# ! Name clashes possible
-class GState(window.Window):
+# TODO Use smooth animations instead of instant transitions and rearchitecture
+class GState:
     DOWN_TICKS = 30
 
     def __init__(self, w, h, size, title) -> None:
         # ! Must enable double_buffer, otherwise manual glFlush required
-        config = pyglet.gl.Config(
-            sample_buffers=1, samples=4, double_buffer=True)
-        super(GState, self).__init__(
-            (w + 8) * size, h * size, caption=title, config=config)
+        config = pyglet.gl.Config(sample_buffers=1, samples=4,
+                                  double_buffer=True)
+        self.win = window.Window(
+            (w + 8) * size, h * size,
+            caption=title, config=config
+        )
+        self.kbd = window.key.KeyStateHandler()
+        self.win.push_handlers(self)
+        self.win.push_handlers(self.kbd)
 
         self.w = w
         self.h = h
@@ -323,7 +357,7 @@ class GState(window.Window):
         self.color = ColorCycler((128, 128, 255), (255, 255, 255))
 
     def on_draw(self):
-        self.clear()
+        self.win.clear()
         # self.arena.debug_raw(self.block)
         tsq = shapes.Rectangle(
             0, 0,
@@ -355,8 +389,8 @@ class GState(window.Window):
 
         # Draw next tile
         tsq.color = Block.COLORS[self.next_block.colid]
-        next_at = Point(self.width * 3 // 4,
-                        self.height - self.size * 3)
+        next_at = Point(self.win.width * 3 // 4,
+                        self.win.height - self.size * 3)
         for pos in self.next_block.current:
             tmp = self.size * pos + next_at
             tsq.x, tsq.y = tmp.x, tmp.y
@@ -364,7 +398,7 @@ class GState(window.Window):
 
         score = text.Label(
             f"Rows Cleared {self.score}",
-            x=next_at.x, y=self.height // 2,
+            x=next_at.x, y=self.win.height // 2,
             font_size=self.size // 2, anchor_x="center"
         )
         score.draw()
@@ -374,7 +408,6 @@ class GState(window.Window):
 
         if sym == k.ESCAPE:
             self.close()
-            self.arena.debug()
         if sym == k.UP:
             self.block.next_config()
             if not self.arena.will_fit(self.block):
@@ -394,7 +427,7 @@ class GState(window.Window):
         if self.paused:
             return
 
-        if window.key.DOWN in self.pressed_keys:
+        if self.kbd[window.key.DOWN]:
             if not self.arena.at_bottom(self.block):
                 self.block.anchor.y -= 1
 
@@ -420,18 +453,19 @@ class GState(window.Window):
 
         if not self.arena.will_fit(self.block):
             self.close()
-            pyglet.app.exit()
-
-            perr("=" * 10)
-            perr([self.block.anchor + b for b in self.block.current])
-            self.arena.debug()
             perr("GAME OVER!!1")
+
             return
 
+    def close(self, debug=True):
+        if debug:
+            self.arena.debug()
+            perr()
+            perr("=" * (self.w * 2))
+            perr([self.block.anchor + b for b in self.block.current])
 
-class TetrisWin(window.Window):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        self.win.close()
+        pyglet.app.exit()
 
 
 if __name__ == "__main__":
