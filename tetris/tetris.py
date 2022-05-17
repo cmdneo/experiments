@@ -4,8 +4,8 @@ import random
 
 from copy import deepcopy
 from typing import Generator
-from itertools import repeat
 from functools import partial
+from itertools import repeat
 from pyglet import window, shapes, text
 
 # TODO Add changing config of block when rotation not possible
@@ -46,7 +46,7 @@ class Point:
 class Block:
     # Zeroth index must be black
     COLORS = [
-        (69, 69, 69),
+        (0, 0, 0),
         (0, 255, 255), (255, 255, 0), (127, 0, 127), (0, 255, 0),
         (255, 0, 0), (0, 0, 255), (255, 127, 0), (127, 127, 127),
     ]
@@ -124,10 +124,13 @@ S_T = [
 BLOCKS = [Block(blk, colid=i+1) for i, blk
           in enumerate([S_SQ, S_I, S_J, S_L, S_Z, S_S, S_T])]
 perr = partial(print, file=sys.stderr)
+# Animation fmt
+# attr: start_val, end_val, Ticks
 
 
 class ColorCycler:
-    def __init__(self, start=(0, 0, 0), end=(255, 255, 255), steps=255) -> None:
+    def __init__(self, start=(0, 0, 0),
+                 end=(255, 255, 255), steps=255) -> None:
         self.r, self.g, self.b = start
         self.start = start
         self.end = end
@@ -165,7 +168,8 @@ class Arena:
     def _is_inside(self, pt: Point) -> bool:
         return 0 <= pt.x < self.w and 0 <= pt.y < self.h
 
-    def _tile_neighs(self, pt: Point, exclude: list[Point] = None) -> list[Point]:
+    def _tile_neighs(self, pt: Point,
+                     exclude: list[Point] = None) -> list[Point]:
         x, y = pt.x, pt.y
         neighs = []
 
@@ -217,7 +221,8 @@ class Arena:
 
             if blk_tiles:
                 blocks.append(Block(
-                    [[(pt.x - x, pt.y - y) for pt in blk_tiles]], anchor=Point(x, y)
+                    [[(pt.x - x, pt.y - y) for pt in blk_tiles]],
+                    anchor=Point(x, y)
                 ))
 
         # import pprint
@@ -326,11 +331,10 @@ class Arena:
         sys.stdout.flush()
 
 
-# TODO Use smooth animations instead of instant transitions and rearchitecture
 class GState:
     DOWN_TICKS = 30
 
-    def __init__(self, w, h, size, title) -> None:
+    def __init__(self, w, h, size, title="Tetris!") -> None:
         # ! Must enable double_buffer, otherwise manual glFlush required
         config = pyglet.gl.Config(sample_buffers=1, samples=4,
                                   double_buffer=True)
@@ -345,10 +349,17 @@ class GState:
         self.w = w
         self.h = h
         self.size = size
+        # 3(3+1 due to size of the tiles) blocks from top
+        # and left of the vertical seperator
+        self.dash_mid = Point(self.size * (self.w + 4),
+                              self.size * (self.h - 4))
         self.score = 0
         self.down_ticks = 0
-        self.margin = 1
         self.paused = False
+
+        self._tile_img = pyglet.resource.image("tile.png")
+        self.tile = pyglet.sprite.Sprite(self._tile_img)
+        self.tile.scale = self.size / self._tile_img.height
 
         self.arena = Arena(w, h)
         self.block = deepcopy(random.choice(BLOCKS))
@@ -356,58 +367,58 @@ class GState:
         self.block.anchor = Point(w // 2, h)
         self.color = ColorCycler((128, 128, 255), (255, 255, 255))
 
+        self.static_elems = pyglet.graphics.Batch()
+        self._make_static_elems()
+
+    def _make_static_elems(self):
+        self.score_txt = text.Label(
+            f"Rows Cleared {self.score}",
+            x=self.dash_mid.x, y=self.win.height // 2,
+            font_size=self.size // 2, anchor_x="center",
+            batch=self.static_elems
+        )
+
+        margin = 1
+        self._vsep_tiles = []
+        for ny in range(self.h):
+            tsq = shapes.Rectangle(
+                self.w * self.size, ny * self.size,
+                self.size - 2 * margin, self.size - 2 * margin,
+                color=(127, 127, 127), batch=self.static_elems
+            )
+            tsq.anchor_position = (margin, margin)
+            self._vsep_tiles.append(tsq)
+
     def on_draw(self):
         self.win.clear()
         # self.arena.debug_raw(self.block)
-        tsq = shapes.Rectangle(
-            0, 0,
-            self.size - self.margin * 2, self.size - self.margin * 2,
-        )
-        tsq.anchor_position = (self.margin, self.margin)
 
         # Draw the fixed tiles in buffer
         for y, row in enumerate(self.arena.buf):
             for x, tile_colid in enumerate(row):
-                tsq.color = Block.COLORS[tile_colid]
-                tsq.x = x * self.size
-                tsq.y = y * self.size
+                self.tile.position = (x * self.size, y * self.size)
+                self.tile.color = Block.COLORS[tile_colid]
                 if tile_colid:
-                    tsq.draw()
+                    self.tile.draw()
 
         # Draw the falling tile
-        for pos in self.block.current:
-            tsq.x = pos.x * self.size + self.block.anchor.x * self.size
-            tsq.y = pos.y * self.size + self.block.anchor.y * self.size
-            tsq.color = self.color.next()
-            tsq.draw()
-
-        # Draw the vertical seperator
-        tsq.color = (127, 127, 127)
-        for ny in range(self.h):
-            tsq.position = (self.w * self.size, ny * self.size)
-            tsq.draw()
+        for pos in self.block.tile_positions():
+            self.tile.position = pos.x * self.size, pos.y * self.size
+            self.tile.color = self.color.next()
+            self.tile.draw()
 
         # Draw next tile
-        tsq.color = Block.COLORS[self.next_block.colid]
-        next_at = Point(self.win.width * 3 // 4,
-                        self.win.height - self.size * 3)
+        self.tile.color = Block.COLORS[self.next_block.colid]
         for pos in self.next_block.current:
-            tmp = self.size * pos + next_at
-            tsq.x, tsq.y = tmp.x, tmp.y
-            tsq.draw()
+            tmp = self.size * pos + self.dash_mid
+            self.tile.position = (tmp.x, tmp.y)
+            self.tile.draw()
 
-        score = text.Label(
-            f"Rows Cleared {self.score}",
-            x=next_at.x, y=self.win.height // 2,
-            font_size=self.size // 2, anchor_x="center"
-        )
-        score.draw()
+        self.static_elems.draw()
 
     def on_key_press(self, sym, mods) -> None:
         k = window.key
 
-        if sym == k.ESCAPE:
-            self.close()
         if sym == k.UP:
             self.block.next_config()
             if not self.arena.will_fit(self.block):
@@ -441,6 +452,7 @@ class GState:
         tmp = self.arena.clear_full_rows()
         while tmp:
             self.score += tmp
+            self.score_txt.text = f"Rows Cleared {self.score}"
             tmp = self.arena.clear_full_rows()
 
         if self.arena.at_bottom(self.block):
@@ -452,12 +464,12 @@ class GState:
             self.block.anchor.y -= 1
 
         if not self.arena.will_fit(self.block):
-            self.close()
+            self.on_close()
             perr("GAME OVER!!1")
 
             return
 
-    def close(self, debug=True):
+    def on_close(self, debug=True):
         if debug:
             self.arena.debug()
             perr()
@@ -469,6 +481,6 @@ class GState:
 
 
 if __name__ == "__main__":
-    state = GState(10, 20, 40, "Tetris")
+    state = GState(10, 20, 40)
     pyglet.clock.schedule_interval(state.update, 1/60)
     pyglet.app.run()
