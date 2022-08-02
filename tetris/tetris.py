@@ -225,8 +225,6 @@ class Arena:
                     anchor=Point(x, y)
                 ))
 
-        # import pprint
-        # pprint.pp(blocks)
         return blocks
 
     def clear_row(self, y: int):
@@ -333,6 +331,9 @@ class Arena:
 
 class GState:
     DOWN_TICKS = 30
+    # Gap between each tile in pixels
+    # Top & right side reduced by that many pixels
+    GAP = 1
 
     def __init__(self, w, h, size, title="Tetris!") -> None:
         # ! Must enable double_buffer, otherwise manual glFlush required
@@ -349,6 +350,7 @@ class GState:
         self.w = w
         self.h = h
         self.size = size
+        self.vis_size = size - GState.GAP
         # 3(3+1 due to size of the tiles) blocks from top
         # and left of the vertical seperator
         self.dash_mid = Point(self.size * (self.w + 4),
@@ -357,16 +359,14 @@ class GState:
         self.down_ticks = 0
         self.paused = False
 
-        self._tile_img = pyglet.resource.image("tile.png")
-        self.tile = pyglet.sprite.Sprite(self._tile_img)
-        self.tile.scale = self.size / self._tile_img.height
-
         self.arena = Arena(w, h)
         self.block = deepcopy(random.choice(BLOCKS))
         self.next_block = deepcopy(random.choice(BLOCKS))
         self.block.anchor = Point(w // 2, h)
         self.color = ColorCycler((128, 128, 255), (255, 255, 255))
 
+        self.tile = shapes.Rectangle(
+            0, 0, self.vis_size, self.vis_size)
         self.static_elems = pyglet.graphics.Batch()
         self._make_static_elems()
 
@@ -378,15 +378,13 @@ class GState:
             batch=self.static_elems
         )
 
-        margin = 1
         self._vsep_tiles = []
         for ny in range(self.h):
             tsq = shapes.Rectangle(
                 self.w * self.size, ny * self.size,
-                self.size - 2 * margin, self.size - 2 * margin,
+                self.vis_size, self.vis_size,
                 color=(127, 127, 127), batch=self.static_elems
             )
-            tsq.anchor_position = (margin, margin)
             self._vsep_tiles.append(tsq)
 
     def on_draw(self):
