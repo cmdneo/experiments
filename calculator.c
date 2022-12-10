@@ -10,12 +10,15 @@
  * binop = '/' | '*' | '+' | '-'
  *
  * BINARY_FUNC := 'min' | 'max'
- * UNARY_FUNC := 'min' | 'max'
+ * UNARY_FUNC := 'sin'   | 'cos'   | 'tan' | 'exp'
+ *             | 'log'   | 'log10' | 'log2'
+ *             | 'floor' | 'ceil'  | 'round'
+ *             | 'sqrt'  | 'abs'   | 'negate'
  *
- * NUMBER := digit+ ['.' digit*]
+ * NUMBER := digit+ ['.' digit*] 
  *
- * IDENT := non_digit (non_digit | digit)*
- *
+ * PARAM := non_digit (non_digit|digit)* # Basically an identifier
+ * 
  * PAREN_EXPR := '(' EXPR ')'
  * 
  * FUNC_EXPR := BINARY_FUNC '( EXPR ',' EXPR ')'
@@ -33,8 +36,6 @@
  *
  */
 
-// TODO Add support for named-parameters
-
 #include <math.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -46,15 +47,14 @@
 
 // On error we just simply print an error message and exit
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
-#define EPRINT(...) (DEBUG(__VA_ARGS__), exit(1))
-#define PARSE_EPRINT(msg) EPRINT("ERROR before %d: %s\n", cursor, (msg))
+#define EPRINT(...) (DEBUG(__VA_ARGS__), DEBUG("\n"), exit(1))
 
 // Common presets
 enum {
-	IDENT_MAX = 255,
-	STACK_MAX = 512,
+	PARAM_MAX = 256,
+	STACK_MAX = 256,
 	CODE_MAX = 4096,
-	LINE_MAX = 8192,
+	LINE_MAX = 16384,
 };
 
 // Stack machine
@@ -72,10 +72,15 @@ static double stack[STACK_MAX];
 static unsigned stack_top;
 static unsigned code_pc;
 
+// For named parameters
+static char *param_names[PARAM_MAX];
+static double param_values[PARAM_MAX];
+static unsigned param_cnt;
+
 static int push_dt_code(Code cd)
 {
 	if (code_cnt == CODE_MAX)
-		EPRINT("Expression too big\n");
+		EPRINT("Expression too big");
 	code[code_cnt++] = cd;
 	return 0;
 }
@@ -119,7 +124,7 @@ static void op_div(void)
 {
 	STACK_POP_TWO(a, b);
 	if (b == 0)
-		EPRINT("Divide by zero\n");
+		EPRINT("Divide by zero");
 	stack_push(a / b);
 }
 
@@ -177,7 +182,7 @@ static void eval_code(void)
 enum Token {
 	TOK_EOF = -100,
 	TOK_NUM,
-	TOK_IDENT,
+	TOK_PARAM,
 	TOK_BIN_FUNC,
 	TOK_UNR_FUNC,
 };
@@ -246,9 +251,10 @@ static void (*FUNC_TABLE[])(void) = {
 
 // Global Parser state
 static char given_line[LINE_MAX];
-static char identifier[IDENT_MAX + 1];
+static char *identifier; // Refers to strings in given_line
 static double number;
 static unsigned func_index;
+static unsigned param_index;
 static int cur_token;
 static int cursor;
 static int last_char = ' ';
@@ -279,17 +285,17 @@ static int next_token_impl(void)
 
 	// Parse number
 	if (isdigit(last_char)) {
-		char numstr[IDENT_MAX + 1] = {0};
+		char numstr[256] = {0};
 		char *tmp = numstr, *end = NULL;
 
 		while (isdigit(last_char) || last_char == '.') {
 			*tmp++ = last_char;
-			if (tmp - numstr == IDENT_MAX)
-				PARSE_EPRINT("Number string too long");
+			if (tmp - numstr == ARRAY_SIZE(numstr))
+				EPRINT("Number string too long");
 
 			number = strtod(numstr, &end);
 			if (*end != '\0')
-				PARSE_EPRINT("Error parsing number");
+				EPRINT("Error parsing number");
 
 			last_char = my_getchar();
 		}
@@ -299,17 +305,14 @@ static int next_token_impl(void)
 
 	// Parse identifier
 	if (is_ident_char(last_char)) {
-		char *tmp = identifier;
-
-		while (is_ident_char(last_char)) {
-			*tmp++ = last_char;
-			if (tmp - identifier == IDENT_MAX)
-				PARSE_EPRINT("Parameter name too long");
-
+		identifier = &given_line[cursor - 1];
+		while (is_ident_char(last_char))
 			last_char = my_getchar();
-		}
-		*tmp = '\0';
 
+		// Insert NULL terminator where the last char was read
+		given_line[cursor - 1] = '\0';
+
+		// Check if is a function name
 		for (unsigned i = 0; i < ARRAY_SIZE(FUNC_NAMES); ++i) {
 			if (strcmp(identifier, FUNC_NAMES[i]) == 0) {
 				func_index = i;
@@ -317,7 +320,19 @@ static int next_token_impl(void)
 			}
 		}
 
-		return TOK_IDENT;
+		// Check if parameter name already exists, if not, then insert a new one
+		for (unsigned i = 0; i < param_cnt; ++i) {
+			if (strcmp(identifier, param_names[i]) == 0) {
+				param_index = i;
+				return TOK_PARAM;
+			}
+		}
+		if (param_cnt == PARAM_MAX)
+			EPRINT("Too many parameter, max allowed is %d", PARAM_MAX);
+		param_index = param_cnt;
+		param_names[param_cnt++] = identifier;
+
+		return TOK_PARAM;
 	}
 
 	if (last_char == EOF)
@@ -334,14 +349,14 @@ static void parse_number(void)
 {
 	push_dt_code((Code){.fnptr = push_value});
 	push_dt_code((Code){.val = number});
-	next_token();
+	next_token(); // Consume TOK_NUM
 }
 
-static void parse_identifier(void)
+static void parse_parameter(void)
 {
 	push_dt_code((Code){.fnptr = push_ident});
-	// push_dt_code((Code){.val_ref = });
-	next_token();
+	push_dt_code((Code){.val_ref = &param_values[param_index]});
+	next_token(); // Comsume TOK_PARAM
 }
 
 static void parse_expr(void);
@@ -351,7 +366,7 @@ static void parse_paren_expr(void)
 	next_token(); // Consume '('
 	parse_expr();
 	if (cur_token != ')')
-		PARSE_EPRINT("Expected closing ')'");
+		EPRINT("Expected closing ')'");
 	next_token();
 }
 
@@ -360,7 +375,7 @@ static void parse_unr_func_expr(void)
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_UNR_FUNC
 	if (cur_token != '(')
-		PARSE_EPRINT("Expected opening '('");
+		EPRINT("Expected opening '('");
 	parse_paren_expr();
 
 	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
@@ -371,17 +386,17 @@ static void parse_bin_func_expr(void)
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_BIN_FUNC
 	if (cur_token != '(')
-		PARSE_EPRINT("Expected opening '('");
+		EPRINT("Expected opening '('");
 	next_token();
 
 	parse_expr();
 	if (cur_token != ',')
-		PARSE_EPRINT("Expected ','");
+		EPRINT("Expected ','");
 	next_token();
 
 	parse_expr();
 	if (cur_token != ')')
-		PARSE_EPRINT("Expected closing ')'");
+		EPRINT("Expected closing ')'");
 	next_token();
 
 	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
@@ -401,9 +416,8 @@ static void parse_base_expr(void)
 		parse_number();
 		break;
 
-	case TOK_IDENT:
-		PARSE_EPRINT("Named parameters not implemented");
-		parse_identifier();
+	case TOK_PARAM:
+		parse_parameter();
 		break;
 
 	case TOK_BIN_FUNC:
@@ -419,7 +433,7 @@ static void parse_base_expr(void)
 		break;
 
 	default:
-		PARSE_EPRINT("Expected number or expression");
+		EPRINT("Expected number or expression");
 		break;
 	}
 
@@ -456,11 +470,16 @@ static void parse_expr(void)
 {
 	parse_base_expr();
 	parse_binop_expr(0);
+
+	// Make sure no unmatching tokens
+	if (cur_token != TOK_EOF && cur_token != '\n')
+		EPRINT("Invalid token sequence in expression");
 }
 
 // Parses the line stored in given_line and generates Direct Threaded Code
 static void parse_input(void)
 {
+	param_cnt = 0;
 	code_cnt = 0;
 	cursor = 0;
 	last_char = ' ';
@@ -472,12 +491,29 @@ static void parse_input(void)
 		parse_expr();
 }
 
+static void input_param_vals(void)
+{
+	if (param_cnt == 0)
+		return;
+
+	printf("> Input values for:\n");
+	for (unsigned i = 0; i < param_cnt; ++i) {
+		printf("> %s = ", param_names[i]);
+		if (scanf("%lf", &param_values[i]) != 1)
+			EPRINT("Error parsing numer");
+
+		for (int c = 0; (c = getchar()) != EOF && c != '\n';)
+			/* Nothing */;
+	}
+}
+
 //---------------------------------------------------------
 
 int main(void)
 {
 	printf("========== Mathematical expression evaluator ==========\n");
-	printf("Grouping supported using parenthesis\n");
+	printf("Grouping using parenthesis and\n"
+		   "named parameters are supported\n\n");
 
 	printf("Available operators:");
 	for (unsigned i = 0; BINOPS[i] != '\0'; ++i)
@@ -500,6 +536,7 @@ int main(void)
 		}
 
 		parse_input();
+		input_param_vals();
 		eval_code();
 		printf("= %.6g\n\n", stack[0]);
 	}
