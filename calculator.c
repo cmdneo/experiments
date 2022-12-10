@@ -363,6 +363,7 @@ static void parse_expr(void);
 
 static void parse_paren_expr(void)
 {
+
 	next_token(); // Consume '('
 	parse_expr();
 	if (cur_token != ')')
@@ -372,6 +373,7 @@ static void parse_paren_expr(void)
 
 static void parse_unr_func_expr(void)
 {
+
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_UNR_FUNC
 	if (cur_token != '(')
@@ -470,10 +472,6 @@ static void parse_expr(void)
 {
 	parse_base_expr();
 	parse_binop_expr(0);
-
-	// Make sure no unmatching tokens
-	if (cur_token != TOK_EOF && cur_token != '\n')
-		EPRINT("Invalid token sequence in expression");
 }
 
 // Parses the line stored in given_line and generates Direct Threaded Code
@@ -489,6 +487,10 @@ static void parse_input(void)
 		return;
 	else
 		parse_expr();
+
+	// Make sure no unmatching tokens at end
+	if (cur_token != TOK_EOF && cur_token != '\n')
+		EPRINT("Invalid token sequence in expression");
 }
 
 static void input_param_vals(void)
