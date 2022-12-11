@@ -464,7 +464,7 @@ static void parse_base_expr(void)
 		break;
 
 	default:
-		EPRINT("Expected number or expression");
+		EPRINT("Expected a number or expression");
 		break;
 	}
 
@@ -527,10 +527,14 @@ static void input_param_vals(void)
 	if (param_cnt == 0)
 		return;
 
+	// Prompt for readline as just printing the prompt using printf does not
+	// work, because when the line is cleared by readline it clears that too
+	char prompt[1024];
 	printf("> Input values for:\n");
 	for (unsigned i = 0; i < param_cnt; ++i) {
-		printf("> %s = ", param_names[i]);
-		char *line = readline("");
+		int pmax = ARRAY_SIZE(prompt) - 10;
+		snprintf(prompt, ARRAY_SIZE(prompt), "> %.*s = ", pmax, param_names[i]);
+		char *line = readline(prompt);
 
 		if (line == NULL)
 			EPRINT("Cannot read number");
@@ -545,6 +549,10 @@ static void input_param_vals(void)
 
 int main(void)
 {
+#ifdef READLINE_ENABLED
+	rl_bind_key('\t', rl_insert); // Disable TAB autocomplete
+#endif
+
 	printf("========== Mathematical expression evaluator ==========\n");
 	printf("Grouping using parenthesis and\n"
 		   "named parameters are supported\n\n");
