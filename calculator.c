@@ -34,6 +34,8 @@
  *
  * EXPR := BASE_EXPR (binop BASE_EXPR)*
  *
+ *
+ * For GNU-readline support compile with flags: -DREADLINE_ENABLED -lreadline
  */
 
 #include <math.h>
@@ -42,6 +44,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+
+#ifdef READLINE_ENABLED
+#include <readline/readline.h>
+#else
+// Simple fallback for readline if GNU-readline not available/enabled
+char *readline(const char *prompt)
+{
+	const unsigned LINE_MAX = 32768;
+	char *line = malloc(LINE_MAX);
+	if (line == NULL)
+		return NULL;
+
+	printf("%s", prompt);
+	if (fgets(line, LINE_MAX, stdin) == NULL) {
+		free(line);
+		return NULL;
+	}
+
+	// Remove newline char
+	char *lf = strchr(line, '\n');
+	if (lf != NULL)
+		*lf = '\0';
+
+	return line;
+}
+#endif // #ifdef READLINE_ENABLED
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(*(arr)))
 
@@ -54,7 +82,6 @@ enum {
 	PARAM_MAX = 256,
 	STACK_MAX = 256,
 	CODE_MAX = 4096,
-	LINE_MAX = 16384,
 };
 
 // Stack machine
@@ -250,7 +277,7 @@ static void (*FUNC_TABLE[])(void) = {
 // clang-format on
 
 // Global Parser state
-static char given_line[LINE_MAX];
+static char *given_line;
 static char *identifier; // Refers to strings in given_line
 static double number;
 static unsigned func_index;
@@ -272,8 +299,10 @@ static inline int get_precedence(int tok)
 
 static inline int my_getchar(void)
 {
-	if (cursor == LINE_MAX || given_line[cursor] == '\0')
+	if (given_line[cursor] == '\0') {
+		cursor++;
 		return EOF;
+	}
 	return given_line[cursor++];
 }
 
@@ -501,11 +530,14 @@ static void input_param_vals(void)
 	printf("> Input values for:\n");
 	for (unsigned i = 0; i < param_cnt; ++i) {
 		printf("> %s = ", param_names[i]);
-		if (scanf("%lf", &param_values[i]) != 1)
-			EPRINT("Error parsing numer");
+		char *line = readline("");
 
-		for (int c = 0; (c = getchar()) != EOF && c != '\n';)
-			/* Nothing */;
+		if (line == NULL)
+			EPRINT("Cannot read number");
+		if (sscanf(line, "%lf", &param_values[i]) != 1)
+			EPRINT("Invalid number");
+
+		free(line);
 	}
 }
 
@@ -531,8 +563,8 @@ int main(void)
 	printf("\n=======================================================\n");
 
 	while (1) {
-		printf("=> ");
-		if (fgets(given_line, LINE_MAX, stdin) == NULL) {
+		given_line = readline("=> ");
+		if (given_line == NULL) {
 			printf("[EXIT]\n");
 			return 0;
 		}
@@ -540,7 +572,10 @@ int main(void)
 		parse_input();
 		input_param_vals();
 		eval_code();
-		printf("= %.6g\n\n", stack[0]);
+		printf("= %g\n\n", stack[0]);
+
+		free(given_line);
+		given_line = NULL;
 	}
 
 	return 0;
