@@ -145,9 +145,9 @@ class ColorCycler:
             self.dir = 1
 
         f = (self.at / self.steps) ** 0.5
-        self.r = (self.start[0] * f + self.end[0] * (1 - f)) // 1
-        self.g = (self.start[1] * f + self.end[1] * (1 - f)) // 1
-        self.b = (self.start[2] * f + self.end[2] * (1 - f)) // 1
+        self.r = int((self.start[0] * f + self.end[0] * (1 - f)))
+        self.g = int((self.start[1] * f + self.end[1] * (1 - f)))
+        self.b = int((self.start[2] * f + self.end[2] * (1 - f)))
 
         self.at += self.dir
 
@@ -314,7 +314,6 @@ class Arena:
                 perr("# " if tile else "- ", end="")
             perr()
         perr("=" * (self.w * 2))
-        perr(self.buf)
 
     def debug_raw(self, extra: Block = None):
         pts = []
@@ -417,6 +416,15 @@ class GState:
     def on_key_press(self, sym, mods) -> None:
         k = window.key
 
+        if sym == k.SPACE:
+            self.paused = not self.paused
+        # Ignore other keypresses if paused
+        if self.paused:
+            self.score_txt.text = "<Paused>"
+            return
+        else:
+            self.score_txt.text = f"Rows cleared {self.score}"
+
         if sym == k.UP:
             self.block.next_config()
             if not self.arena.will_fit(self.block):
@@ -429,8 +437,6 @@ class GState:
             self.block.anchor.x -= 1
             if not self.arena.will_fit(self.block):
                 self.block.anchor.x += 1
-        elif sym == k.SPACE:
-            self.paused = not self.paused
 
     def update(self, dt):
         if self.paused:
@@ -470,8 +476,6 @@ class GState:
     def on_close(self, debug=True):
         if debug:
             self.arena.debug()
-            perr()
-            perr("=" * (self.w * 2))
             perr([self.block.anchor + b for b in self.block.current])
 
         self.win.close()
