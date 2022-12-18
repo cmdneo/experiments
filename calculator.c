@@ -1,13 +1,13 @@
 /* Mathematical expression evaluator
  *
  * Grammar:
- * Precedence order: % / * + -
+ * Precedence order(High to Low): ^ / * + -
  * Left to right associativity for same precedence
  *
  * digit = any{0-9}
  * alpha = any{a-zA-Z}
  * non_digit = aplha | '_'
- * binop = '/' | '*' | '+' | '-'
+ * binop = '^' | '/' | '*' | '+' | '-'
  *
  * BINARY_FUNC := 'min' | 'max'
  * UNARY_FUNC := 'sin'   | 'cos'   | 'tan' | 'exp'
@@ -21,7 +21,7 @@
  * 
  * PAREN_EXPR := '(' EXPR ')'
  * 
- * FUNC_EXPR := BINARY_FUNC '( EXPR ',' EXPR ')'
+ * FUNC_EXPR := BINARY_FUNC '(' EXPR ',' EXPR ')'
  *            | UNARY_FUNC PAREN_EXPR
  *
  * BASE_EXPR :=
@@ -33,7 +33,6 @@
  *            | PARAM
  *
  * EXPR := BASE_EXPR (binop BASE_EXPR)*
- *
  *
  * For GNU-readline support compile with flags: -DREADLINE_ENABLED -lreadline
  */
@@ -62,10 +61,8 @@ char *readline(const char *prompt)
 		return NULL;
 	}
 
-	// Remove newline char
-	char *lf = strchr(line, '\n');
-	if (lf != NULL)
-		*lf = '\0';
+	// Remove newline
+	line[strcspn(line, "\n")] = '\0';
 
 	return line;
 }
@@ -75,7 +72,7 @@ char *readline(const char *prompt)
 
 // On error we just simply print an error message and exit
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
-#define EPRINT(...) (DEBUG(__VA_ARGS__), DEBUG("\n"), exit(1))
+#define JMP_PRINTF(...) (DEBUG(__VA_ARGS__), DEBUG("\n"), exit(1))
 
 // Common presets
 enum {
@@ -107,7 +104,7 @@ static unsigned param_cnt;
 static int push_dt_code(Code cd)
 {
 	if (code_cnt == CODE_MAX)
-		EPRINT("Expression too big");
+		JMP_PRINTF("Expression too big");
 	code[code_cnt++] = cd;
 	return 0;
 }
@@ -121,7 +118,7 @@ static int push_dt_code(Code cd)
 void stack_push(double val)
 {
 	if (stack_top == STACK_MAX)
-		EPRINT("VM Stack overflow\n");
+		JMP_PRINTF("VM Stack overflow\n");
 	stack[stack_top++] = val;
 }
 
@@ -151,7 +148,7 @@ static void op_div(void)
 {
 	STACK_POP_TWO(a, b);
 	if (b == 0)
-		EPRINT("Divide by zero");
+		JMP_PRINTF("Divide by zero");
 	stack_push(a / b);
 }
 
@@ -320,11 +317,11 @@ static int next_token_impl(void)
 		while (isdigit(last_char) || last_char == '.') {
 			*tmp++ = last_char;
 			if (tmp - numstr == ARRAY_SIZE(numstr))
-				EPRINT("Number string too long");
+				JMP_PRINTF("Number string too long");
 
 			number = strtod(numstr, &end);
 			if (*end != '\0')
-				EPRINT("Error parsing number");
+				JMP_PRINTF("Error parsing number");
 
 			last_char = my_getchar();
 		}
@@ -357,7 +354,7 @@ static int next_token_impl(void)
 			}
 		}
 		if (param_cnt == PARAM_MAX)
-			EPRINT("Too many parameter, max allowed is %d", PARAM_MAX);
+			JMP_PRINTF("Too many parameter, max allowed is %d", PARAM_MAX);
 		param_index = param_cnt;
 		param_names[param_cnt++] = identifier;
 
@@ -396,7 +393,7 @@ static void parse_paren_expr(void)
 	next_token(); // Consume '('
 	parse_expr();
 	if (cur_token != ')')
-		EPRINT("Expected closing ')'");
+		JMP_PRINTF("Expected closing ')'");
 	next_token();
 }
 
@@ -406,7 +403,7 @@ static void parse_unr_func_expr(void)
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_UNR_FUNC
 	if (cur_token != '(')
-		EPRINT("Expected opening '('");
+		JMP_PRINTF("Expected opening '('");
 	parse_paren_expr();
 
 	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
@@ -417,17 +414,17 @@ static void parse_bin_func_expr(void)
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_BIN_FUNC
 	if (cur_token != '(')
-		EPRINT("Expected opening '('");
+		JMP_PRINTF("Expected opening '('");
 	next_token();
 
 	parse_expr();
 	if (cur_token != ',')
-		EPRINT("Expected ','");
+		JMP_PRINTF("Expected ','");
 	next_token();
 
 	parse_expr();
 	if (cur_token != ')')
-		EPRINT("Expected closing ')'");
+		JMP_PRINTF("Expected closing ')'");
 	next_token();
 
 	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
@@ -435,11 +432,14 @@ static void parse_bin_func_expr(void)
 
 static void parse_base_expr(void)
 {
-	// If a sign is at top level, then there must be a base_expr after that
-	bool negated = false;
+	// Handle if a sign before (maybe)base_expr
 	if (cur_token == '-' || cur_token == '+') {
-		negated = cur_token == '-';
+		bool negated = cur_token == '-';
 		next_token(); // Eat sign
+		parse_base_expr();
+		if (negated)
+			push_dt_code((Code){.fnptr = op_negate});
+		return;
 	}
 
 	switch (cur_token) {
@@ -464,12 +464,9 @@ static void parse_base_expr(void)
 		break;
 
 	default:
-		EPRINT("Expected a number or expression");
+		JMP_PRINTF("Expected a number or expression");
 		break;
 	}
-
-	if (negated)
-		push_dt_code((Code){.fnptr = op_negate});
 }
 
 // (binop BASE_EXPR)*
@@ -519,7 +516,7 @@ static void parse_input(void)
 
 	// Make sure no unmatching tokens at end
 	if (cur_token != TOK_EOF && cur_token != '\n')
-		EPRINT("Invalid token sequence in expression");
+		JMP_PRINTF("Invalid token sequence in expression");
 }
 
 static void input_param_vals(void)
@@ -537,9 +534,9 @@ static void input_param_vals(void)
 		char *line = readline(prompt);
 
 		if (line == NULL)
-			EPRINT("Cannot read number");
+			JMP_PRINTF("Cannot read number");
 		if (sscanf(line, "%lf", &param_values[i]) != 1)
-			EPRINT("Invalid number");
+			JMP_PRINTF("Invalid number");
 
 		free(line);
 	}
