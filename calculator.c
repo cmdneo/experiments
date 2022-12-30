@@ -43,6 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <setjmp.h>
 
 #ifdef READLINE_ENABLED
 #include <readline/readline.h>
@@ -70,9 +71,12 @@ char *readline(const char *prompt)
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(*(arr)))
 
-// On error we just simply print an error message and exit
+// On error we jump to the cleanup code and restart the calculator
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
-#define JMP_PRINTF(...) (DEBUG(__VA_ARGS__), DEBUG("\n"), exit(1))
+#define JMP_ERROR(...) \
+	(DEBUG("[ERROR] "), DEBUG(__VA_ARGS__), DEBUG("\n"), longjmp(jmp_env, 1))
+
+static jmp_buf jmp_env;
 
 // Common presets
 enum {
@@ -104,22 +108,29 @@ static unsigned param_cnt;
 static int push_dt_code(Code cd)
 {
 	if (code_cnt == CODE_MAX)
-		JMP_PRINTF("Expression too big");
+		JMP_ERROR("Expression too big");
 	code[code_cnt++] = cd;
 	return 0;
 }
 
 // Operations for stack machine
 //-----------------------------------------------
-#define STACK_POP_TWO(id1, id2)      \
-	double id2 = stack[--stack_top]; \
-	double id1 = stack[--stack_top];
+#define STACK_POP_TWO(id1, id2) \
+	double id2 = stack_pop();   \
+	double id1 = stack_pop();
 
-void stack_push(double val)
+static void stack_push(double val)
 {
 	if (stack_top == STACK_MAX)
-		JMP_PRINTF("VM Stack overflow\n");
+		JMP_ERROR("VM Stack overflow\n");
 	stack[stack_top++] = val;
+}
+
+static double stack_pop(void)
+{
+	if (stack_top == 0)
+		JMP_ERROR("Stack empty!\n");
+	return stack[--stack_top];
 }
 
 static void push_value(void) { stack_push(code[code_pc++].val); }
@@ -148,7 +159,7 @@ static void op_div(void)
 {
 	STACK_POP_TWO(a, b);
 	if (b == 0)
-		JMP_PRINTF("Divide by zero");
+		JMP_ERROR("Divide by zero");
 	stack_push(a / b);
 }
 
@@ -317,11 +328,11 @@ static int next_token_impl(void)
 		while (isdigit(last_char) || last_char == '.') {
 			*tmp++ = last_char;
 			if (tmp - numstr == ARRAY_SIZE(numstr))
-				JMP_PRINTF("Number string too long");
+				JMP_ERROR("Number string too long");
 
 			number = strtod(numstr, &end);
 			if (*end != '\0')
-				JMP_PRINTF("Error parsing number");
+				JMP_ERROR("Error parsing number");
 
 			last_char = my_getchar();
 		}
@@ -354,7 +365,7 @@ static int next_token_impl(void)
 			}
 		}
 		if (param_cnt == PARAM_MAX)
-			JMP_PRINTF("Too many parameter, max allowed is %d", PARAM_MAX);
+			JMP_ERROR("Too many parameter, max allowed is %d", PARAM_MAX);
 		param_index = param_cnt;
 		param_names[param_cnt++] = identifier;
 
@@ -393,7 +404,7 @@ static void parse_paren_expr(void)
 	next_token(); // Consume '('
 	parse_expr();
 	if (cur_token != ')')
-		JMP_PRINTF("Expected closing ')'");
+		JMP_ERROR("Expected closing ')'");
 	next_token();
 }
 
@@ -403,7 +414,7 @@ static void parse_unr_func_expr(void)
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_UNR_FUNC
 	if (cur_token != '(')
-		JMP_PRINTF("Expected opening '('");
+		JMP_ERROR("Expected opening '('");
 	parse_paren_expr();
 
 	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
@@ -414,17 +425,17 @@ static void parse_bin_func_expr(void)
 	int fn_idx = func_index;
 	next_token(); // Consume TOK_BIN_FUNC
 	if (cur_token != '(')
-		JMP_PRINTF("Expected opening '('");
+		JMP_ERROR("Expected opening '('");
 	next_token();
 
 	parse_expr();
 	if (cur_token != ',')
-		JMP_PRINTF("Expected ','");
+		JMP_ERROR("Expected ','");
 	next_token();
 
 	parse_expr();
 	if (cur_token != ')')
-		JMP_PRINTF("Expected closing ')'");
+		JMP_ERROR("Expected closing ')'");
 	next_token();
 
 	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
@@ -464,7 +475,7 @@ static void parse_base_expr(void)
 		break;
 
 	default:
-		JMP_PRINTF("Expected a number or expression");
+		JMP_ERROR("Expected a number or expression");
 		break;
 	}
 }
@@ -516,7 +527,7 @@ static void parse_input(void)
 
 	// Make sure no unmatching tokens at end
 	if (cur_token != TOK_EOF && cur_token != '\n')
-		JMP_PRINTF("Invalid token sequence in expression");
+		JMP_ERROR("Invalid token sequence in expression");
 }
 
 static void input_param_vals(void)
@@ -534,9 +545,9 @@ static void input_param_vals(void)
 		char *line = readline(prompt);
 
 		if (line == NULL)
-			JMP_PRINTF("Cannot read number");
+			JMP_ERROR("Cannot read number");
 		if (sscanf(line, "%lf", &param_values[i]) != 1)
-			JMP_PRINTF("Invalid number");
+			JMP_ERROR("Invalid number");
 
 		free(line);
 	}
@@ -574,13 +585,19 @@ int main(void)
 			return 0;
 		}
 
-		parse_input();
-		input_param_vals();
-		eval_code();
-		printf("= %g\n\n", stack[0]);
-
-		free(given_line);
-		given_line = NULL;
+		// Error recovery
+		switch (setjmp(jmp_env)) {
+		case 0:
+			parse_input();
+			input_param_vals();
+			eval_code();
+			printf("= %g\n", stack_pop());
+			/* fall through */
+		default:
+			free(given_line);
+			given_line = NULL;
+			break;
+		}
 	}
 
 	return 0;
