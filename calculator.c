@@ -540,14 +540,18 @@ static void input_param_vals(void)
 	char prompt[1024];
 	printf("> Input values for:\n");
 	for (unsigned i = 0; i < param_cnt; ++i) {
-		int pmax = ARRAY_SIZE(prompt) - 10;
+		int pmax = ARRAY_SIZE(prompt) - 24;
 		snprintf(prompt, ARRAY_SIZE(prompt), "> %.*s = ", pmax, param_names[i]);
-		char *line = readline(prompt);
 
+		char *line = readline(prompt);
 		if (line == NULL)
 			JMP_ERROR("Cannot read number");
-		if (sscanf(line, "%lf", &param_values[i]) != 1)
+
+		char end = 0;
+		if (sscanf(line, "%lf %c", &param_values[i], &end) != 1) {
+			free(line);
 			JMP_ERROR("Invalid number");
+		}
 
 		free(line);
 	}
