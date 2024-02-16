@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <sys/mman.h>
 

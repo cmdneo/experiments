@@ -1,6 +1,6 @@
 /******************************************************************************
-We define a limited version stackful coroutines using setjmp and longjmp and a
-set of macros (and some magic), here is how to use them.
+We define a limited version of stackful coroutines using setjmp and longjmp
+and a set of macros (and some magic), here is how to use them.
 
 Every coro has a context associated with it which contains the information
 about resuming, renewing and suspending the coroutine.
@@ -32,7 +32,8 @@ call, because coro_init_n_bind takes a long time(upto 1ms) to run.
 
 We can use CORO_AWAIT to call an awaitable function or a primitive-async
 function from within a coroutine.
-An awaitable function should begin with CORO_MAKE_AWAITABLE at top.
+
+TODO An awaitable function should begin with CORO_MAKE_AWAITABLE at top.
 
 A primitive-async function is a coroutine which does need any context. It is
 usually a collection system calls for doing IO and are the basic building
@@ -110,22 +111,10 @@ enum CoroSignal {
 };
 
 typedef union CoroValue {
-	int8_t i8;
-	int16_t i16;
-	int32_t i32;
 	int64_t i64;
-	uint8_t u8;
-	uint16_t u16;
-	uint32_t u32;
 	uint64_t u64;
-	char c;
 	void *ptr;
 } CoroValue;
-
-typedef struct CoroResult {
-	enum CoroSignal signal;
-	CoroValue value;
-} CoroResult;
 
 typedef void (*CoroFunction)(int);
 
@@ -135,36 +124,75 @@ extern _Thread_local void *initing_coro_arg__;
 extern _Thread_local CoroValue returned_coro_value__;
 void coro_abort__(const char *msg, const char *name);
 
-// TODO Make returning values more general and useful.
+/// @brief Setup arguments and prepare the coroutine for execution.
+/// @note The coroutine should be not pending.
+#define CORO_SETUP_TASK(context_ptr, arg_ptr)      \
+	do {                                           \
+		initing_coro_arg__ = (arg_ptr);            \
+		if (setjmp((context_ptr)->yield_ctx) == 0) \
+			longjmp((context_ptr)->reset_ctx, 1);  \
+	} while (0)
+
+/// @brief Run a coroutine from the event loop.
+#define CORO_RUN_TASK(status_var, context_ptr)         \
+	do {                                               \
+		status_var = setjmp((context_ptr)->yield_ctx); \
+		if (status_var == 0)                           \
+			longjmp((context_ptr)->resume_ctx, 1);     \
+	} while (0)
+
+#define CORO_GET_RESULT(coro_value_var)         \
+	do {                                        \
+		coro_value_var = returned_coro_value__; \
+	} while (0)
+
+// The initialization(first) call is invoked by raising a signal which
+// setups the jump point for calling the coroutine, and then we
+// suspend the function by jumping back to wherever from sigsetjmp was called.
+// We use siglongjmp which restores the signal mask, which ensures that
+// the signals for setting up more coroutines are not blocked.
+// We also save a reset point, for setting up arguments and renewing the
+// coroutine without binding it again using `coro_init_n_bind`, since
+// it is an expensive function due to signals being expensive.
+/// @brief Put at the top of a coro-function.
+#define CORO_BEGIN(arg_ptr)                                    \
+	CoroContext *cctx__ = initing_coro_context__;              \
+	if (setjmp(cctx__->resume_ctx) == 0) {                     \
+		if (setjmp(cctx__->reset_ctx) == 0)                    \
+			siglongjmp(cctx__->yield_ctx, 1);                  \
+	} else {                                                   \
+		coro_abort__("task setup not done", __func__);         \
+	}                                                          \
+	if (cctx__->is_pending)                                    \
+		coro_abort__("cannot setup a pending coro", __func__); \
+	(cctx__)->is_pending = true;                               \
+	arg_ptr = initing_coro_arg__;                              \
+	CORO_SUSPEND()
+
+/// @brief Put at the end of a coro-function.
+#define CORO_END() CORO_RETURN(0)
 
 // Suspend the coroutines yielding a specific signal.
 // Generally this should not be used in user code.
-#define CORO_SUSPEND_SIGNAL(coro_signal) \
-	if (setjmp(cctx__->resume_ctx) == 0) \
+#define CORO_SUSPEND_SIGNALLING(coro_signal) \
+	if (setjmp(cctx__->resume_ctx) == 0)     \
 	longjmp(cctx__->yield_ctx, coro_signal)
 
 /// @brief Suspend the coroutine, signalling that it is still pending.
-#define CORO_SUSPEND() CORO_SUSPEND_SIGNAL(CORO_PENDING)
+#define CORO_SUSPEND() CORO_SUSPEND_SIGNALLING(CORO_PENDING)
 
 /// @brief Suspend the coroutine returning a value, and signal that it is complete.
 /// Running the coroutine after it has returned is an error.
-#define CORO_RETURN(value)                                        \
+#define CORO_RETURN(int_or_ptr)                                   \
 	do {                                                          \
 		_Generic(                                                 \
-			(value),                                              \
-			int8_t: returned_coro_value__.i8,                     \
-			int16_t: returned_coro_value__.i16,                   \
-			int32_t: returned_coro_value__.i32,                   \
+			(int_or_ptr),                                         \
 			int64_t: returned_coro_value__.i64,                   \
-			uint8_t: returned_coro_value__.u8,                    \
-			uint16_t: returned_coro_value__.u16,                  \
-			uint32_t: returned_coro_value__.u32,                  \
 			uint64_t: returned_coro_value__.u64,                  \
-			char: returned_coro_value__.c,                        \
 			default: returned_coro_value__.ptr                    \
-		) = (value);                                              \
+		) = (int_or_ptr);                                         \
 		cctx__->is_pending = false;                               \
-		CORO_SUSPEND_SIGNAL(CORO_DONE);                           \
+		CORO_SUSPEND_SIGNALLING(CORO_DONE);                       \
 		coro_abort__("cannot resume after completion", __func__); \
 	} while (0)
 
@@ -176,7 +204,7 @@ void coro_abort__(const char *msg, const char *name);
 	do {                                                         \
 		result_var = (primitive_async_call);                     \
 		if (result_var == CORO_SYS_ERROR) {                      \
-			CORO_SUSPEND_SIGNAL(CORO_SYS_ERROR);                 \
+			CORO_SUSPEND_SIGNALLING(CORO_SYS_ERROR);             \
 			coro_abort__("called after system error", __func__); \
 		} else if (result_var == CORO_PENDING) {                 \
 			if (setjmp(cctx__->resume_ctx) == 0)                 \
@@ -186,50 +214,7 @@ void coro_abort__(const char *msg, const char *name);
 		break;                                                   \
 	} while (1)
 
-/// @brief Run a coroutine from the event loop.
-#define CORO_RUN_TASK(status_var, context_ptr)         \
-	do {                                               \
-		status_var = setjmp((context_ptr)->yield_ctx); \
-		if (status_var == 0)                           \
-			longjmp((context_ptr)->resume_ctx, 1);     \
-	} while (0)
-
-/// @brief Renew and setup arguments for a coroutine which is not pending.
-#define CORO_SETUP_TASK(context_ptr, arg_ptr)      \
-	do {                                           \
-		initing_coro_arg__ = (arg_ptr);            \
-		if (setjmp((context_ptr)->yield_ctx) == 0) \
-			longjmp((context_ptr)->reset_ctx, 1);  \
-	} while (0)
-
-// The initialization(first) call is invoked by raising a signal which
-// setups the jump point for calling the coroutine, and then we
-// suspend the function by jumping back to wherever from sigsetjmp was called.
-// We use siglongjmp which restores the signal mask, which ensures that
-// the signals for setting up more coroutines are not blocked.
-// We also save a reset point, for setting up arguments and also renewing the
-// coroutine to without binding it again using `coro_init_n_bind`, since
-// it is an expensive function.
-/// @brief Put at the top of a coro-function.
-#define CORO_BEGIN(typed_argp)                                 \
-	CoroContext *cctx__ = initing_coro_context__;              \
-	if (setjmp(cctx__->resume_ctx) == 0) {                     \
-		if (setjmp(cctx__->reset_ctx) == 0)                    \
-			siglongjmp(cctx__->yield_ctx, 1);                  \
-	} else {                                                   \
-		coro_abort__("setup not done", __func__);              \
-	}                                                          \
-	if (cctx__->is_pending)                                    \
-		coro_abort__("cannot renew a pending coro", __func__); \
-	(cctx__)->is_pending = true;                               \
-	typed_argp = initing_coro_arg__;                           \
-	CORO_SUSPEND()
-
-/// @brief Put at the end of a coro-function.
-#define CORO_END() CORO_RETURN(0)
-
-// TODO implement awaitables
-#define CORO_MAKE_AWAITABLE() CoroContext *cctx__ = initing_coro_context__;
+// TODO implement general awaitables
 
 /// @brief Allocates stack space and binds the context with a `callback`.
 /// @param ctx Context

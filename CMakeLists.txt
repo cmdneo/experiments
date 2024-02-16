@@ -18,3 +18,5 @@ target_link_libraries(fgampl m)
 add_executable(calculator "calculator.c")
 target_compile_definitions(calculator PRIVATE READLINE_ENABLED=1)
 target_link_libraries(calculator m readline)
+
+add_library(stackfulcoro "stackful-coro/coroutine.c")
