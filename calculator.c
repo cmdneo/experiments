@@ -223,7 +223,7 @@ enum Token {
 };
 
 // clang-format off
-const static char *BINOPS = "-+*/^";
+static const char *BINOPS = "-+*/^";
 static const int PRECEDENCE_TABLE[] = {
 	['-'] = 1,
 	['+'] = 2,

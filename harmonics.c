@@ -10,8 +10,8 @@
 #define RATE 44100.0
 #define PI 3.1415926535897932384626433
 #define DT (1.0 / RATE)
-#define NHARMS 16
-#define DAMP 0.004
+#define NHARMS 8
+#define DAMP 0.002
 
 enum audio_config {
 	NBYTES = sizeof(int16_t) / sizeof(char),
@@ -24,13 +24,13 @@ typedef union audio_T {
 
 } audio_T;
 
-int main()
+int main(void)
 {
 	audio_T aout = { 0 };
 	double f = 100.;
 
 	for (;;) {
-		for (double t = 0.; t < 0.5; t += DT) {
+		for (double t = 0.; t < 1.0; t += DT) {
 			double y = 0.;
 			for (int i = 0; i < NHARMS; i++)
 				y += sin((i + 1.) * 2. * PI * f * t) /

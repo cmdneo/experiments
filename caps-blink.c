@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-int main()
+int main(void)
 {
 	struct timespec dr = { 0, 100000000 };
 	int fd = open("/dev/console", O_WRONLY);
