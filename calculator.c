@@ -1,8 +1,8 @@
 /* Mathematical expression evaluator
  *
  * Grammar:
- * Precedence order(High to Low): ^ / * + -
- * Left to right associativity for same precedence
+ * Precedence order(high to low): ^ / * + -
+ * All operators except power(^) are left associative.
  *
  * digit = any{0-9}
  * alpha = any{a-zA-Z}
@@ -37,6 +37,7 @@
  * For GNU-readline support compile with flags: -DREADLINE_ENABLED -lreadline
  */
 
+#include <assert.h>
 #include <math.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -87,8 +88,10 @@ enum {
 
 // Stack machine
 //---------------------------------------------------------
+typedef void(MathFunc(void));
+
 typedef union Code {
-	void (*fnptr)(void);
+	MathFunc *fnptr;
 	double *val_ref;
 	double val;
 } Code;
@@ -181,25 +184,26 @@ static void op_max(void)
 	stack_push(a > b ? a : b);
 }
 
-// Generates op_<cmath_func> unary functions
-#define GEN_UNR_FUNC(cmath_func)                                   \
-	static void op_##cmath_func(void)                              \
+#define GEN_UNARY_FN_NAMED(gen_name, cmath_func)                   \
+	static void gen_name(void)                                     \
 	{                                                              \
 		stack[stack_top - 1] = (cmath_func)(stack[stack_top - 1]); \
 	}
+// Generates op_<cmath_func> unary functions
+#define GEN_UNARY_FN(cmath_func) GEN_UNARY_FN_NAMED(op_##cmath_func, cmath_func)
 
-GEN_UNR_FUNC(sin)
-GEN_UNR_FUNC(cos)
-GEN_UNR_FUNC(tan)
-GEN_UNR_FUNC(exp)
-GEN_UNR_FUNC(log)
-GEN_UNR_FUNC(log10)
-GEN_UNR_FUNC(log2)
-GEN_UNR_FUNC(floor)
-GEN_UNR_FUNC(ceil)
-GEN_UNR_FUNC(round)
-GEN_UNR_FUNC(sqrt)
-static void op_abs(void) { stack[stack_top - 1] = fabs(stack[stack_top - 1]); }
+GEN_UNARY_FN(sin)
+GEN_UNARY_FN(cos)
+GEN_UNARY_FN(tan)
+GEN_UNARY_FN(exp)
+GEN_UNARY_FN(log)
+GEN_UNARY_FN(log10)
+GEN_UNARY_FN(log2)
+GEN_UNARY_FN(floor)
+GEN_UNARY_FN(ceil)
+GEN_UNARY_FN(round)
+GEN_UNARY_FN(sqrt)
+GEN_UNARY_FN_NAMED(op_abs, fabs)
 static void op_negate(void) { stack[stack_top - 1] = -stack[stack_top - 1]; }
 
 static void eval_code(void)
@@ -222,23 +226,20 @@ enum Token {
 	TOK_UNR_FUNC,
 };
 
+// Left and right precedence for associativity.
+typedef struct Precedence {
+	short left;
+	short right;
+} Precedence;
+
 // clang-format off
 static const char *BINOPS = "-+*/^";
-static const int PRECEDENCE_TABLE[] = {
-	['-'] = 1,
-	['+'] = 2,
-	['*'] = 3,
-	['/'] = 4,
-	['^'] = 5,
-};
-
-// Indexed by precedence
-static void (*BINOP_FUNC_TABLE[])(void) = {
-	[1] = op_sub,
-	[2] = op_add,
-	[3] = op_mul,
-	[4] = op_div,
-	[5] = op_pow,
+static const Precedence PRECEDENCE_TABLE[] = {
+	['-'] = {11, 10},
+	['+'] = {21, 20},
+	['*'] = {31, 30},
+	['/'] = {41, 40},
+	['^'] = {50, 51},
 };
 
 static const unsigned BIN_FUNC_LAST_INDEX = 1;
@@ -263,7 +264,7 @@ static const char *FUNC_NAMES[] = {
 };
 
 // Indexed by func_index
-static void (*FUNC_TABLE[])(void) = {
+static MathFunc *FUNC_TABLE[] = {
 	// Binary functions
 	op_min,
 	op_max,
@@ -298,11 +299,30 @@ static inline bool is_ident_char(int c) { return isalnum(c) || c == '_'; }
 
 static inline bool is_binop(int c) { return strchr(BINOPS, c) != NULL; }
 
-static inline int get_precedence(int tok)
+static Precedence get_precedence(int tok)
 {
 	if (is_binop(tok))
 		return PRECEDENCE_TABLE[tok];
-	return 0;
+	return (Precedence){0};
+}
+
+static MathFunc *get_binop_function(int token)
+{
+	switch (token) {
+	case '-':
+		return op_sub;
+	case '+':
+		return op_add;
+	case '*':
+		return op_mul;
+	case '/':
+		return op_div;
+	case '^':
+		return op_pow;
+	}
+
+	assert(!"Unreachable");
+	return NULL;
 }
 
 static inline int my_getchar(void)
@@ -481,26 +501,31 @@ static void parse_base_expr(void)
 }
 
 // (binop BASE_EXPR)*
-static void parse_binop_expr(int prev_pres)
+static void parse_binop_expr(Precedence prev_pres)
 {
 	// Ambiguity resolution: prev_op BASE_EXPR cur_op BASE_EXPR next_op
+	// We handle associativity requirements using different value for the
+	// left and right precedence of the same operator.
 	while (1) {
-		int pres = get_precedence(cur_token);
-		// If current binop binds less or equally tightly to the previous one,
-		// then LHS expression is complete and done
-		// For example: 2 + 2 * 3 - 4 is (2 + 2 * 3) - 4
-		if (prev_pres >= pres)
+		Precedence pres = get_precedence(cur_token);
+		int binop_tok = cur_token;
+		// If current binop binds less tightly than the previous one then, the
+		// previous binop has higher precedence or both the binops are same
+		// and have left-associativity.
+		if (prev_pres.left >= pres.right)
 			return;
 
 		next_token(); // Consume binop
 		parse_base_expr();
 
-		// If next binop binds more tighly than the current one, then descend
-		int next_pres = get_precedence(cur_token);
-		if (next_pres > pres)
+		// If next binop binds more tighly than the current one the, the
+		// next binop has higher precedence or both  binops are same
+		// and have right-associativity.
+		Precedence next_pres = get_precedence(cur_token);
+		if (next_pres.right > pres.left)
 			parse_binop_expr(pres);
 
-		push_dt_code((Code){.fnptr = BINOP_FUNC_TABLE[pres]});
+		push_dt_code((Code){.fnptr = get_binop_function(binop_tok)});
 	}
 }
 
@@ -508,7 +533,7 @@ static void parse_binop_expr(int prev_pres)
 static void parse_expr(void)
 {
 	parse_base_expr();
-	parse_binop_expr(0);
+	parse_binop_expr((Precedence){0});
 }
 
 // Parses the line stored in given_line and generates Direct Threaded Code
