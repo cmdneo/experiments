@@ -233,7 +233,7 @@ typedef struct Precedence {
 } Precedence;
 
 // clang-format off
-static const char *BINOPS = "-+*/^";
+static const char BINOPS[] = "-+*/^";
 static const Precedence PRECEDENCE_TABLE[] = {
 	['-'] = {11, 10},
 	['+'] = {21, 20},
@@ -242,8 +242,16 @@ static const Precedence PRECEDENCE_TABLE[] = {
 	['^'] = {50, 51},
 };
 
+static MathFunc *const BINOP_FUNC_TABLE[] = {
+	['-'] = op_sub,
+	['+'] = op_add,
+	['*'] = op_mul,
+	['/'] = op_div,
+	['^'] = op_pow,
+};
+
 static const unsigned BIN_FUNC_LAST_INDEX = 1;
-static const char *FUNC_NAMES[] = {
+static const char *const FUNC_NAMES[] = {
 	// Binary functions
 	"min",
 	"max",
@@ -264,7 +272,7 @@ static const char *FUNC_NAMES[] = {
 };
 
 // Indexed by func_index
-static MathFunc *FUNC_TABLE[] = {
+static MathFunc *const FUNC_TABLE[] = {
 	// Binary functions
 	op_min,
 	op_max,
@@ -299,28 +307,17 @@ static inline bool is_ident_char(int c) { return isalnum(c) || c == '_'; }
 
 static inline bool is_binop(int c) { return strchr(BINOPS, c) != NULL; }
 
-static Precedence get_precedence(int tok)
+static inline Precedence get_precedence(int token)
 {
-	if (is_binop(tok))
-		return PRECEDENCE_TABLE[tok];
+	if (is_binop(token))
+		return PRECEDENCE_TABLE[token];
 	return (Precedence){0};
 }
 
-static MathFunc *get_binop_function(int token)
+static inline MathFunc *get_binop_function(int token)
 {
-	switch (token) {
-	case '-':
-		return op_sub;
-	case '+':
-		return op_add;
-	case '*':
-		return op_mul;
-	case '/':
-		return op_div;
-	case '^':
-		return op_pow;
-	}
-
+	if (is_binop(token))
+		return BINOP_FUNC_TABLE[token];
 	assert(!"Unreachable");
 	return NULL;
 }
@@ -510,7 +507,7 @@ static void parse_binop_expr(Precedence prev_pres)
 		Precedence pres = get_precedence(cur_token);
 		int binop_tok = cur_token;
 		// If current binop binds less tightly than the previous one then, the
-		// previous binop has higher precedence or both the binops are same
+		// previous binop has higher precedence or the both binops are same
 		// and have left-associativity.
 		if (prev_pres.left >= pres.right)
 			return;
@@ -519,7 +516,7 @@ static void parse_binop_expr(Precedence prev_pres)
 		parse_base_expr();
 
 		// If next binop binds more tighly than the current one the, the
-		// next binop has higher precedence or both  binops are same
+		// next binop has higher precedence or the both binops are same
 		// and have right-associativity.
 		Precedence next_pres = get_precedence(cur_token);
 		if (next_pres.right > pres.left)
