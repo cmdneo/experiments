@@ -206,7 +206,7 @@ GEN_UNARY_FN(sqrt)
 GEN_UNARY_FN_NAMED(op_abs, fabs)
 static void op_negate(void) { stack[stack_top - 1] = -stack[stack_top - 1]; }
 
-static void eval_code(void)
+static void execute_code(void)
 {
 	code_pc = 0;
 	stack_top = 0;
@@ -226,7 +226,7 @@ enum Token {
 	TOK_UNR_FUNC,
 };
 
-// Left and right precedence for associativity.
+// Left and right precedence(binding power) for associativity.
 typedef struct Precedence {
 	short left;
 	short right;
@@ -235,11 +235,11 @@ typedef struct Precedence {
 // clang-format off
 static const char BINOPS[] = "-+*/^";
 static const Precedence PRECEDENCE_TABLE[] = {
-	['-'] = {11, 10},
-	['+'] = {21, 20},
-	['*'] = {31, 30},
-	['/'] = {41, 40},
-	['^'] = {50, 51},
+	['-'] = {10, 11},
+	['+'] = {20, 21},
+	['*'] = {30, 31},
+	['/'] = {40, 41},
+	['^'] = {51, 50},
 };
 
 static MathFunc *const BINOP_FUNC_TABLE[] = {
@@ -509,17 +509,17 @@ static void parse_binop_expr(Precedence prev_pres)
 		// If current binop binds less tightly than the previous one then, the
 		// previous binop has higher precedence or the both binops are same
 		// and have left-associativity.
-		if (prev_pres.left >= pres.right)
+		if (prev_pres.right >= pres.left)
 			return;
 
 		next_token(); // Consume binop
 		parse_base_expr();
 
-		// If next binop binds more tighly than the current one the, the
+		// If next binop binds more tighly than the current one then, the
 		// next binop has higher precedence or the both binops are same
 		// and have right-associativity.
 		Precedence next_pres = get_precedence(cur_token);
-		if (next_pres.right > pres.left)
+		if (pres.right < next_pres.left)
 			parse_binop_expr(pres);
 
 		push_dt_code((Code){.fnptr = get_binop_function(binop_tok)});
@@ -530,11 +530,12 @@ static void parse_binop_expr(Precedence prev_pres)
 static void parse_expr(void)
 {
 	parse_base_expr();
-	parse_binop_expr((Precedence){0});
+	parse_binop_expr((Precedence){0, 0});
 }
 
-// Parses the line stored in given_line and generates Direct Threaded Code
-static void parse_input(void)
+// Parses the line stored in given_line and generates Direct Threaded Code.
+// Returns false on empty input, true if parsed successfully.
+static bool parse_input(void)
 {
 	param_cnt = 0;
 	code_cnt = 0;
@@ -542,17 +543,22 @@ static void parse_input(void)
 	last_char = ' ';
 
 	next_token();
-	if (cur_token == '\n' || cur_token == TOK_EOF)
-		return;
+
+	// Do nothing on empty line.
+	if (cur_token == '\n' || cur_token == '\r' || cur_token == TOK_EOF)
+		return false;
 	else
 		parse_expr();
 
-	// Make sure no unmatching tokens at end
+	// Make sure that the input has been fully parsed.
+	// That is: expr NEWLINE | expr NEWLINE
 	if (cur_token != TOK_EOF && cur_token != '\n')
 		JMP_ERROR("Invalid token sequence in expression");
+
+	return true;
 }
 
-static void input_param_vals(void)
+static void input_param_values(void)
 {
 	if (param_cnt == 0)
 		return;
@@ -560,7 +566,7 @@ static void input_param_vals(void)
 	// Prompt for readline as just printing the prompt using printf does not
 	// work, because when the line is cleared by readline it clears that too
 	char prompt[1024];
-	printf("> Input values for:\n");
+	printf("Input values for:\n");
 	for (unsigned i = 0; i < param_cnt; ++i) {
 		int pmax = ARRAY_SIZE(prompt) - 24;
 		snprintf(prompt, ARRAY_SIZE(prompt), "> %.*s = ", pmax, param_names[i]);
@@ -570,6 +576,7 @@ static void input_param_vals(void)
 			JMP_ERROR("Cannot read number");
 
 		char end = 0;
+		// Check that number has no invalid characters at end.
 		if (sscanf(line, "%lf %c", &param_values[i], &end) != 1) {
 			free(line);
 			JMP_ERROR("Invalid number");
@@ -587,6 +594,8 @@ int main(void)
 	rl_bind_key('\t', rl_insert); // Disable TAB autocomplete
 #endif
 
+	// Print help text
+	//-----------------------------------------------------------------
 	printf("========== Mathematical expression evaluator ==========\n");
 	printf("Grouping using parenthesis and\n"
 		   "named parameters are supported\n\n");
@@ -611,19 +620,17 @@ int main(void)
 			return 0;
 		}
 
-		// Error recovery
-		switch (setjmp(jmp_env)) {
-		case 0:
-			parse_input();
-			input_param_vals();
-			eval_code();
-			printf("= %g\n", stack_pop());
-			/* fall through */
-		default:
-			free(given_line);
-			given_line = NULL;
-			break;
+		// Error recovery and restart.
+		if (setjmp(jmp_env) == 0) {
+			if (parse_input()) {
+				input_param_values();
+				execute_code();
+				printf("= %g\n", stack_pop());
+			}
 		}
+
+		free(given_line);
+		given_line = NULL;
 	}
 
 	return 0;
