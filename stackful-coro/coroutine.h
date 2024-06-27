@@ -90,23 +90,23 @@ typedef struct CoroContext {
 	void *stack;
 } CoroContext;
 
-/// @brief Signalling values returned by coros, all of these are negative.
+/// @brief Signalling values returned by coros.
 enum CoroSignal {
 	// Unhandeled system-call error, errno should be checked if this happens.
 	// Coroutines unwind and return to the caller(at CORO_RUN_TASK), if this value
 	// is detected. A coroutine should not be resumed after it returns this
 	// value without using CORO_SETUP_TASK on it, doing so is an error.
 	CORO_SYS_ERROR = -1,
-	// IO/wait operation would block.
-	CORO_PENDING = -31,
 	// Coroutine succesfully completed.
-	CORO_DONE,
+	CORO_DONE = 0,
+	// IO/wait peration would block.
+	CORO_PENDING,
 
 	// Below codes are returned by primitive-async IO functions only.
 	// The underlying IO device is not available for any operations.
 	CORO_IO_CLOSED,
-	// The underlying IO device has no more data to be read.
-	// But it might be writable.
+	// The underlying IO device has no more data to be read,
+	// but it might be writable.
 	CORO_IO_EOF,
 };
 
@@ -116,11 +116,14 @@ typedef union CoroValue {
 	void *ptr;
 } CoroValue;
 
+/// @bried CoroFunction type, the 'int argument is present due to
+/// implementation reasons and should be ignored.
 typedef void (*CoroFunction)(int);
 
 /* For internal use only */
 extern _Thread_local CoroContext *initing_coro_context__;
 extern _Thread_local void *initing_coro_arg__;
+extern _Thread_local enum CoroSignal coro_suspend_signal__;
 extern _Thread_local CoroValue returned_coro_value__;
 void coro_abort__(const char *msg, const char *name);
 
@@ -133,12 +136,13 @@ void coro_abort__(const char *msg, const char *name);
 			longjmp((context_ptr)->reset_ctx, 1);  \
 	} while (0)
 
-/// @brief Run a coroutine from the event loop.
-#define CORO_RUN_TASK(status_var, context_ptr)         \
-	do {                                               \
-		status_var = setjmp((context_ptr)->yield_ctx); \
-		if (status_var == 0)                           \
-			longjmp((context_ptr)->resume_ctx, 1);     \
+/// @brief Run a coroutine from the event loop, the status code of
+/// type CORO_SIGNAL is saved into status_var.
+#define CORO_RUN_TASK(status_var, context_ptr)     \
+	do {                                           \
+		if (setjmp((context_ptr)->yield_ctx) == 0) \
+			longjmp((context_ptr)->resume_ctx, 1); \
+		status_var = coro_suspend_signal__;        \
 	} while (0)
 
 #define CORO_GET_RESULT(coro_value_var)         \
@@ -172,29 +176,15 @@ void coro_abort__(const char *msg, const char *name);
 /// @brief Put at the end of a coro-function.
 #define CORO_END() CORO_RETURN(0)
 
-// Suspend the coroutines yielding a specific signal.
+// Suspend the coroutines yielding the specificied signal.
 // Generally this should not be used in user code.
 #define CORO_SUSPEND_SIGNALLING(coro_signal) \
+	coro_suspend_signal__ = coro_signal;     \
 	if (setjmp(cctx__->resume_ctx) == 0)     \
-	longjmp(cctx__->yield_ctx, coro_signal)
+	longjmp(cctx__->yield_ctx, 1)
 
 /// @brief Suspend the coroutine, signalling that it is still pending.
 #define CORO_SUSPEND() CORO_SUSPEND_SIGNALLING(CORO_PENDING)
-
-/// @brief Suspend the coroutine returning a value, and signal that it is complete.
-/// Running the coroutine after it has returned is an error.
-#define CORO_RETURN(int_or_ptr)                                   \
-	do {                                                          \
-		_Generic(                                                 \
-			(int_or_ptr),                                         \
-			int64_t: returned_coro_value__.i64,                   \
-			uint64_t: returned_coro_value__.u64,                  \
-			default: returned_coro_value__.ptr                    \
-		) = (int_or_ptr);                                         \
-		cctx__->is_pending = false;                               \
-		CORO_SUSPEND_SIGNALLING(CORO_DONE);                       \
-		coro_abort__("cannot resume after completion", __func__); \
-	} while (0)
 
 // If setjmp returned from longjmp(fake-return), then it means that the coroutine
 // was resumed due to some IO event, so we re-execute primitive_async_call.
@@ -213,6 +203,21 @@ void coro_abort__(const char *msg, const char *name);
 		}                                                        \
 		break;                                                   \
 	} while (1)
+
+/// @brief Exit the coroutine returning a value, and signal that it is complete.
+/// Running the coroutine after it has returned is an error.
+#define CORO_RETURN(int_or_ptr)                                   \
+	do {                                                          \
+		_Generic(                                                 \
+			(int_or_ptr + 0LL),                                   \
+			int64_t: returned_coro_value__.i64,                   \
+			uint64_t: returned_coro_value__.u64,                  \
+			default: returned_coro_value__.ptr                    \
+		) = (int_or_ptr);                                         \
+		cctx__->is_pending = false;                               \
+		CORO_SUSPEND_SIGNALLING(CORO_DONE);                       \
+		coro_abort__("cannot resume after completion", __func__); \
+	} while (0)
 
 // TODO implement general awaitables
 

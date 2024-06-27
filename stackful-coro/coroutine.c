@@ -10,7 +10,7 @@
 #include "coroutine.h"
 
 // No physical memory is allocated until we write to it. Demand paging FTW.
-#define CORO_STACK_SIZE (1 << 20) /* 4 MiB */
+#define CORO_STACK_SIZE (4 << 20) /* 4 MiB */
 
 static_assert(CORO_STACK_SIZE >= 2 * SIGSTKSZ, "CORO_STACK_SIZE is too small");
 
@@ -19,6 +19,7 @@ static_assert(CORO_STACK_SIZE >= 2 * SIGSTKSZ, "CORO_STACK_SIZE is too small");
 // global variables to indirectly pass and setup the arguments for the coroutine.
 _Thread_local CoroContext *initing_coro_context__;
 _Thread_local void *initing_coro_arg__;
+_Thread_local enum CoroSignal coro_suspend_signal__;
 _Thread_local CoroValue returned_coro_value__;
 
 int coro_init_n_bind(CoroContext *ctx, CoroFunction callback)
