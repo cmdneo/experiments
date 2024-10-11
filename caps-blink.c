@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -8,10 +9,12 @@
 
 int main(void)
 {
-	struct timespec dr = { 0, 100000000 };
+	struct timespec dr = {0, 100000000};
 	int fd = open("/dev/console", O_WRONLY);
 	if (fd < 0) {
-		printf("Failed to open console\n");
+		perror("open");
+		if (errno == EPERM)
+			printf("Try running with sudo.\n");
 		return 1;
 	}
 
