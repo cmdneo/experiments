@@ -226,6 +226,8 @@ enum Token {
 	TOK_UNR_FUNC,
 };
 
+// Simple and general Pratt parsing, refer to:
+// https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
 // Left and right precedence(binding power) for associativity.
 typedef struct Precedence {
 	short left;
