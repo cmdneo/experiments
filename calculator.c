@@ -34,7 +34,8 @@
  *
  * EXPR := BASE_EXPR (binop BASE_EXPR)*
  *
- * For GNU-readline support compile with flags: -DREADLINE_ENABLED -lreadline
+ * Compile command: gcc calculator.c -lm -o calculator
+ * For GNU-readline support include flags: -DREADLINE_ENABLED -lreadline
  */
 
 #include <assert.h>
@@ -49,7 +50,7 @@
 #ifdef READLINE_ENABLED
 #include <readline/readline.h>
 #else
-// Simple fallback for readline if GNU-readline not available/enabled
+// Simple fallback for readline if GNU-readline not available/enabled.
 char *readline(const char *prompt)
 {
 	const unsigned LINE_MAX = 32768;
@@ -72,8 +73,9 @@ char *readline(const char *prompt)
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(*(arr)))
 
-// On error we jump to the cleanup code and restart the calculator
 #define DEBUG(...) fprintf(stderr, __VA_ARGS__)
+
+// On error we jump to the cleanup code and restart the calculator using this.
 #define JMP_ERROR(...) \
 	(DEBUG("[ERROR] "), DEBUG(__VA_ARGS__), DEBUG("\n"), longjmp(jmp_env, 1))
 
@@ -116,7 +118,7 @@ static int push_dt_code(Code cd)
 	return 0;
 }
 
-// Operations for stack machine
+// Operations for the stack machine
 //-----------------------------------------------
 #define STACK_POP_TWO(id1, id2) \
 	double id2 = stack_pop();   \
@@ -132,7 +134,7 @@ static void stack_push(double val)
 static double stack_pop(void)
 {
 	if (stack_top == 0)
-		JMP_ERROR("Stack empty!\n");
+		JMP_ERROR("Pop on empty stack, this should never happen\n");
 	return stack[--stack_top];
 }
 
@@ -184,26 +186,43 @@ static void op_max(void)
 	stack_push(a > b ? a : b);
 }
 
-#define GEN_UNARY_FN_NAMED(gen_name, cmath_func)                   \
+static void op_atan2(void)
+{
+	STACK_POP_TWO(a, b);
+	stack_push(atan2(a, b));
+}
+
+// Generates unary functions
+#define GEN_UNARY_FN(gen_name, cmath_func)                         \
 	static void gen_name(void)                                     \
 	{                                                              \
 		stack[stack_top - 1] = (cmath_func)(stack[stack_top - 1]); \
 	}
-// Generates op_<cmath_func> unary functions
-#define GEN_UNARY_FN(cmath_func) GEN_UNARY_FN_NAMED(op_##cmath_func, cmath_func)
 
-GEN_UNARY_FN(sin)
-GEN_UNARY_FN(cos)
-GEN_UNARY_FN(tan)
-GEN_UNARY_FN(exp)
-GEN_UNARY_FN(log)
-GEN_UNARY_FN(log10)
-GEN_UNARY_FN(log2)
-GEN_UNARY_FN(floor)
-GEN_UNARY_FN(ceil)
-GEN_UNARY_FN(round)
-GEN_UNARY_FN(sqrt)
-GEN_UNARY_FN_NAMED(op_abs, fabs)
+GEN_UNARY_FN(op_sin, sin)
+GEN_UNARY_FN(op_cos, cos)
+GEN_UNARY_FN(op_tan, tan)
+GEN_UNARY_FN(op_asin, asin)
+GEN_UNARY_FN(op_acos, acos)
+GEN_UNARY_FN(op_atan, atan)
+GEN_UNARY_FN(op_sinh, sinh)
+GEN_UNARY_FN(op_cosh, cosh)
+GEN_UNARY_FN(op_tanh, tanh)
+GEN_UNARY_FN(op_asinh, asinh)
+GEN_UNARY_FN(op_acosh, acosh)
+GEN_UNARY_FN(op_atanh, atanh)
+GEN_UNARY_FN(op_exp, exp)
+GEN_UNARY_FN(op_log, log)
+GEN_UNARY_FN(op_log10, log10)
+GEN_UNARY_FN(op_log2, log2)
+GEN_UNARY_FN(op_floor, floor)
+GEN_UNARY_FN(op_ceil, ceil)
+GEN_UNARY_FN(op_round, round)
+GEN_UNARY_FN(op_sqrt, sqrt)
+GEN_UNARY_FN(op_abs, fabs)
+
+#undef GEN_UNARY_FN
+
 static void op_negate(void) { stack[stack_top - 1] = -stack[stack_top - 1]; }
 
 static void execute_code(void)
@@ -234,6 +253,12 @@ typedef struct Precedence {
 	short right;
 } Precedence;
 
+typedef struct FuncNamePair {
+	int arity;
+	const char *name;
+	MathFunc *fn;
+} FuncNamePair;
+
 // clang-format off
 static const char BINOPS[] = "-+*/^";
 static const Precedence PRECEDENCE_TABLE[] = {
@@ -252,55 +277,47 @@ static MathFunc *const BINOP_FUNC_TABLE[] = {
 	['^'] = op_pow,
 };
 
-static const unsigned BIN_FUNC_LAST_INDEX = 1;
-static const char *const FUNC_NAMES[] = {
-	// Binary functions
-	"min",
-	"max",
-	// Unary functions
-	"sin",
-	"cos",
-	"tan",
-	"exp",
-	"log",
-	"log10",
-	"log2",
-	"floor",
-	"ceil",
-	"round",
-	"sqrt",
-	"abs",
-	"negate",
+#define FP(arity, name) {arity, #name, op_##name}
+
+static const FuncNamePair FUNC_NAME_PAIRS[] = {
+	FP(2, min),
+	FP(2, max),
+	FP(1, sin),
+	FP(1, cos),
+	FP(1, tan),
+	FP(1, asin),
+	FP(1, acos),
+	FP(1, atan),
+	FP(2, atan2),
+	FP(1, sinh),
+	FP(1, cosh),
+	FP(1, tanh),
+	FP(1, asinh),
+	FP(1, acosh),
+	FP(1, atanh),
+	FP(1, exp),
+	FP(1, log),
+	FP(1, log10),
+	FP(1, log2),
+	FP(1, floor),
+	FP(1, ceil),
+	FP(1, round),
+	FP(1, sqrt),
+	FP(1, abs),
+	FP(1, negate),
 };
 
-// Indexed by func_index
-static MathFunc *const FUNC_TABLE[] = {
-	// Binary functions
-	op_min,
-	op_max,
-	// Unary functions
-	op_sin,
-	op_cos,
-	op_tan,
-	op_exp,
-	op_log,
-	op_log10,
-	op_log2,
-	op_floor,
-	op_ceil,
-	op_round,
-	op_sqrt,
-	op_abs,
-	op_negate,
-};
+#undef FP
 // clang-format on
 
-// Global Parser state
+// Global parser state
 static char *given_line;
 static char *identifier; // Refers to strings in given_line
-static double number;
-static unsigned func_index;
-static unsigned param_index;
+static double number; // Parsed numeric for literal
+static MathFunc *math_fnptr; // Current function/operator
+static unsigned param_index; // Named parameter index
+
+// Global lexer state
 static int cur_token;
 static int cursor;
 static int last_char = ' ';
@@ -369,10 +386,12 @@ static int next_token_impl(void)
 		given_line[cursor - 1] = '\0';
 
 		// Check if is a function name
-		for (unsigned i = 0; i < ARRAY_SIZE(FUNC_NAMES); ++i) {
-			if (strcmp(identifier, FUNC_NAMES[i]) == 0) {
-				func_index = i;
-				return i > BIN_FUNC_LAST_INDEX ? TOK_UNR_FUNC : TOK_BIN_FUNC;
+		for (unsigned i = 0; i < ARRAY_SIZE(FUNC_NAME_PAIRS); ++i) {
+			FuncNamePair tmp = FUNC_NAME_PAIRS[i];
+
+			if (strcmp(identifier, tmp.name) == 0) {
+				math_fnptr = tmp.fn;
+				return tmp.arity == 1 ? TOK_UNR_FUNC : TOK_BIN_FUNC;
 			}
 		}
 
@@ -430,18 +449,18 @@ static void parse_paren_expr(void)
 static void parse_unr_func_expr(void)
 {
 
-	int fn_idx = func_index;
+	MathFunc *fnptr = math_fnptr;
 	next_token(); // Consume TOK_UNR_FUNC
 	if (cur_token != '(')
 		JMP_ERROR("Expected opening '('");
 	parse_paren_expr();
 
-	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
+	push_dt_code((Code){.fnptr = fnptr});
 }
 
 static void parse_bin_func_expr(void)
 {
-	int fn_idx = func_index;
+	MathFunc *fnptr = math_fnptr;
 	next_token(); // Consume TOK_BIN_FUNC
 	if (cur_token != '(')
 		JMP_ERROR("Expected opening '('");
@@ -457,7 +476,7 @@ static void parse_bin_func_expr(void)
 		JMP_ERROR("Expected closing ')'");
 	next_token();
 
-	push_dt_code((Code){.fnptr = FUNC_TABLE[fn_idx]});
+	push_dt_code((Code){.fnptr = fnptr});
 }
 
 static void parse_base_expr(void)
@@ -607,10 +626,10 @@ int main(void)
 		printf(" %c", BINOPS[i]);
 
 	printf("\nAvailable functions:");
-	for (unsigned i = 0; i < ARRAY_SIZE(FUNC_NAMES); ++i) {
+	for (unsigned i = 0; i < ARRAY_SIZE(FUNC_NAME_PAIRS); ++i) {
 		if (i % 5 == 0)
 			printf("\n%20s", ""); // Indent
-		printf(" %s", FUNC_NAMES[i]);
+		printf(" %s", FUNC_NAME_PAIRS[i].name);
 	}
 
 	printf("\n=======================================================\n");
@@ -622,13 +641,13 @@ int main(void)
 			return 0;
 		}
 
-		// Error recovery and restart.
-		if (setjmp(jmp_env) == 0) {
-			if (parse_input()) {
-				input_param_values();
-				execute_code();
-				printf("= %g\n", stack_pop());
-			}
+		// For error recovery and restart.
+		if (setjmp(jmp_env) != 0) {
+			// Error jmp, do nothing.
+		} else if (parse_input()) {
+			input_param_values();
+			execute_code();
+			printf("= %g\n", stack_pop());
 		}
 
 		free(given_line);
